@@ -1,68 +1,75 @@
-# 模块 03 — ocr
+# Module 03 - ocr
 
-> 页面图像 → OCR 文本。流水线里第一个调 LLM 的模块，也是最重的视觉处理环节。
+> Page image to OCR text. This is the first module in the pipeline that calls an LLM, and it is the heaviest visual-processing step.
 
-## 1. 目的
+## 1. Purpose
 
-对 `data/pages/<doc_id>/p*.png` 逐页 OCR，产出 `data/ocr_text/<doc_id>/p*.txt`。
+Run OCR page by page over `data/pages/<doc_id>/p*.png` and produce `data/ocr_text/<doc_id>/p*.txt`.
 
-底层逻辑**继承原 `glm_ocr_ollama.py` 的思路**：传统 CV 预处理（去歪斜、增强、裁剪、切片）→ 切片送视觉模型 → 合并文本 → 兜底整图单次调用。
+The underlying logic **inherits the approach from the original `glm_ocr_ollama.py`**: traditional CV preprocessing (deskew, enhancement, crop, tiling), send each tile to the vision model, merge text, and fall back to a single full-page model call.
 
-## 2. 输入 / 输出
+## 2. Input / Output
 
-**输入**：
-- `data/pages/<doc_id>/p*.png`（来自 02 pdf_ingest）
-- 模型名（默认 `glm-ocr:latest`）
-- 运行参数（tile、max_new_tokens 等）
+**Input**:
 
-**输出**：
-```
+- `data/pages/<doc_id>/p*.png` from module 02 `pdf_ingest`
+- Model name, defaulting to `glm-ocr:latest`
+- Runtime parameters such as tile count and `max_new_tokens`
+
+**Output**:
+
+```text
 data/ocr_text/<doc_id>/
-├── p001.txt
-├── p002.txt
-├── ...
-├── run_status.log
-└── _debug/                    # debug=True 时
-    ├── p001__prep_0.png       # 预处理后切片 0
-    ├── p001__prep_1.png       # 预处理后切片 1
-    ├── p001__resp_0.json      # 对应模型原始响应
-    ├── p001__resp_1.json
-    └── p001__raw_0.txt        # 纯文本响应
+|-- p001.txt
+|-- p002.txt
+|-- ...
+|-- run_status.log
+|-- manifest.json               # Per-page OCR status and text statistics
+`-- _debug/                    # When debug=True
+    |-- p001__prep_0.png       # Preprocessed tile 0
+    |-- p001__prep_1.png       # Preprocessed tile 1
+    |-- p001__resp_0.json      # Raw model response for tile 0
+    |-- p001__resp_1.json
+    `-- p001__raw_0.txt        # Plain text response
 ```
 
-**约定**：
-- 文本文件每一行尽量保留原版面断行
-- 无法 OCR 的页写入字面值 `[OCR_EMPTY]`（不留空文件，让下游知道是"试过但空"）
+Conventions:
 
-## 3. 核心算法（继承原系统）
+- Text files should preserve original line breaks as much as possible.
+- Pages that cannot be OCRed should contain the literal value `[OCR_EMPTY]`. Do not leave empty files; downstream modules need to know the page was attempted.
+- OCR text is a durable intermediate artifact, not a temporary cache. Downstream classifier, name, metadata, and place modules must read from `data/ocr_text/<doc_id>/pNNN.txt` instead of re-running OCR.
+- After every page, write or update `manifest.json` atomically with status, character count, elapsed time, model name, tile count, and any error. This makes large-document resume and dashboard display reliable.
+- Debug image artifacts are useful but can be large. Keep them optional, and support a retention policy such as "keep debug only for failed pages" for full-size runs.
 
-```
+## 3. Core Algorithm (Inherited From the Original System)
+
+```text
 page.png
-  │
-  ▼ enhance_gray              # 中值模糊去背景 + CLAHE + unsharp
-  │
-  ▼ deskew                    # 用 minAreaRect 校正歪斜
-  │
-  ▼ crop_foreground           # 基于自适应阈值的前景裁剪
-  │
-  ▼ resize_long_side          # 保证长边 ≥ 1800（OCR 需要足够分辨率）
-  │
-  ▼ split_vertical_with_overlap(parts=2, overlap=200)   # 切成上下两片带重叠
-  │
-  ▼ for each slice:
-  │     base64(slice) → ollama vision generate(prompt, image)
-  │     → cleanup_ocr_text(response)
-  │
-  ▼ join non-empty slice texts with "\n\n"
-  │
-  ▼ if empty: fallback 整图单次调用
-  │
-  ▼ if still empty: write "[OCR_EMPTY]"
+  |
+  v enhance_gray              # Median blur background removal + CLAHE + unsharp
+  |
+  v deskew                    # Correct skew with minAreaRect
+  |
+  v crop_foreground           # Foreground crop using adaptive thresholding
+  |
+  v resize_long_side          # Ensure long side >= 1800 for OCR resolution
+  |
+  v split_vertical_with_overlap(parts=2, overlap=200)
+  |
+  v for each slice:
+  |     base64(slice) -> ollama vision generate(prompt, image)
+  |     -> cleanup_ocr_text(response)
+  |
+  v join non-empty slice texts with "\n\n"
+  |
+  v if empty: fallback to a single full-image call
+  |
+  v if still empty: write "[OCR_EMPTY]"
 ```
 
-原代码里的 OCR prompt 直接原样搬：
+Move the original OCR prompt into `config/prompts/ocr.txt` unchanged:
 
-```
+```text
 You are an OCR engine. Transcribe ALL visible text from the image.
 Rules:
 - Output ONLY the text (no markdown, no code fences).
@@ -71,53 +78,52 @@ Rules:
 - If you cannot read any text, output exactly: [OCR_EMPTY]
 ```
 
-抽到 `config/prompts/ocr.txt`。
+## 4. Directory Structure
 
-## 4. 目录结构
-
-```
+```text
 src/modules/ocr/
-├── __init__.py
-├── core.py                   # run_folder / ocr_page 主流程
-├── preprocessing.py          # enhance_gray / deskew / crop_foreground / resize / tile
-├── blueprint.py              # Flask
-├── standalone.py
-├── cli.py
-├── templates/
-│   ├── ui.html
-│   └── _partials/
-│       ├── page_picker.html
-│       └── preprocess_strip.html
-├── static/
-│   └── ocr.css
-└── tests/
-    ├── test_preprocessing.py    # 只测纯 CV，无 LLM
-    ├── test_core_mocked.py      # 用 mock OllamaClient
-    └── fixtures/
-        ├── clean_page.png
-        ├── skewed_page.png
-        └── noisy_page.png
+|-- __init__.py
+|-- core.py                   # run_folder / ocr_page main flow
+|-- preprocessing.py          # enhance_gray / deskew / crop_foreground / resize / tile
+|-- blueprint.py              # Flask
+|-- standalone.py
+|-- cli.py
+|-- templates/
+|   |-- ui.html
+|   `-- _partials/
+|       |-- page_picker.html
+|       `-- preprocess_strip.html
+|-- static/
+|   `-- ocr.css
+`-- tests/
+    |-- test_preprocessing.py    # Pure CV only, no LLM
+    |-- test_core_mocked.py      # Uses mocked OllamaClient
+    `-- fixtures/
+        |-- clean_page.png
+        |-- skewed_page.png
+        `-- noisy_page.png
 ```
 
-`preprocessing.py` 的每个函数都能独立调用和测试，与 LLM 解耦。
+Every function in `preprocessing.py` should be independently callable and testable, decoupled from the LLM.
 
 ## 5. Blueprint API
 
-| 方法 | 路径 | 行为 |
+| Method | Path | Behavior |
 |---|---|---|
-| GET  | `/ocr/` | 测试 UI |
-| GET  | `/ocr/docs` | 列出所有有拆页产物的 doc_id |
-| GET  | `/ocr/pages/<doc_id>` | 列出该 doc 所有可 OCR 的页面 |
-| POST | `/ocr/preview/<doc_id>/<page>` | 只跑预处理（不调 LLM），返回 5 张中间图 base64 |
-| POST | `/ocr/run-single/<doc_id>/<page>` | 跑单页完整 OCR（调 LLM） |
-| POST | `/ocr/run-all/<doc_id>` | 异步跑整 doc，返回 job_id |
-| GET  | `/ocr/debug/<doc_id>/<page>` | 返回该页的 debug 目录内容（如果开启 debug） |
-| GET  | `/ocr/text/<doc_id>/<page>` | 返回已 OCR 的文本 |
-| GET  | `/ocr/status/<doc_id>` | 该 doc 的 OCR 进度 |
+| GET | `/ocr/` | Test UI |
+| GET | `/ocr/docs` | List all `doc_id` values with ingested page artifacts |
+| GET | `/ocr/pages/<doc_id>` | List all OCRable pages for the document |
+| POST | `/ocr/preview/<doc_id>/<page>` | Run preprocessing only, without calling the LLM, and return five intermediate images as base64 |
+| POST | `/ocr/run-single/<doc_id>/<page>` | Run full OCR for one page, including LLM call |
+| POST | `/ocr/run-all/<doc_id>` | Run the whole document asynchronously and return `job_id` |
+| GET | `/ocr/debug/<doc_id>/<page>` | Return debug directory contents for the page, if debug is enabled |
+| GET | `/ocr/text/<doc_id>/<page>` | Return existing OCR text |
+| GET | `/ocr/status/<doc_id>` | Return OCR progress for the document |
 
 ## 6. CLI
 
-完全兼容原脚本参数：
+Fully compatible with the original script parameters:
+
 ```bash
 python -m modules.ocr.cli \
   --in_dir /data/pages/myDoc \
@@ -128,52 +134,43 @@ python -m modules.ocr.cli \
   --max_new_tokens 1200
 ```
 
-## 7. 测试 UI 设计（**这是本模块的核心可视化**）
+## 7. Test UI Design
 
-UI 要实现"肉眼 debug OCR 的每一步"。布局：
+This UI must let a human debug every OCR step visually:
 
-```
-┌───────────────────────────────────────────────────────────────────┐
-│  Doc: [ myDoc ▼ ]   Page: [ p012 ▼ ]   Model: [ glm-ocr ▼ ]       │
-│  [ Preview only ]   [ Run OCR on this page ]   [ Run all pages ]  │
-├───────────────────────────────────────────────────────────────────┤
-│  Preprocessing pipeline                                           │
-│  ┌─────┐ → ┌─────┐ → ┌─────┐ → ┌─────┐ → ┌──────┬──────┐          │
-│  │ orig│   │enhc.│   │desk.│   │crop │   │tile0 │tile1 │          │
-│  │     │   │     │   │     │   │     │   │      │      │          │
-│  └─────┘   └─────┘   └─────┘   └─────┘   └──────┴──────┘          │
-│  每张图点击放大；hover 显示尺寸 / 耗时                              │
-├───────────────────────────────────────────────────────────────────┤
-│  Model responses                                                  │
-│  ┌────────────────────────┐  ┌────────────────────────┐          │
-│  │ Tile 0 response        │  │ Tile 1 response        │          │
-│  │ elapsed: 4.3s          │  │ elapsed: 3.9s          │          │
-│  │ chars: 1203            │  │ chars: 872             │          │
-│  │ ┌────────────────────┐ │  │ ┌────────────────────┐ │          │
-│  │ │ <OCR text here>    │ │  │ │ <OCR text here>    │ │          │
-│  │ │ ...                │ │  │ │ ...                │ │          │
-│  │ └────────────────────┘ │  │ └────────────────────┘ │          │
-│  │ [Raw JSON ▼]           │  │ [Raw JSON ▼]           │          │
-│  └────────────────────────┘  └────────────────────────┘          │
-├───────────────────────────────────────────────────────────────────┤
-│  Final output (joined)                                            │
-│  ┌───────────────────────────────────────────────────────────────┐│
-│  │ <merged page text>                                             ││
-│  │ ...                                                            ││
-│  └───────────────────────────────────────────────────────────────┘│
-│  [ Download .txt ]                                                │
-└───────────────────────────────────────────────────────────────────┘
+```text
++-------------------------------------------------------------------+
+|  Doc: [ myDoc ]   Page: [ p012 ]   Model: [ glm-ocr ]             |
+|  [ Preview only ]   [ Run OCR on this page ]   [ Run all pages ]  |
++-------------------------------------------------------------------+
+|  Preprocessing pipeline                                           |
+|  [orig] -> [enhanced] -> [deskewed] -> [crop] -> [tile0] [tile1]  |
+|  Click any image to enlarge. Hover shows dimensions and timing.   |
++-------------------------------------------------------------------+
+|  Model responses                                                  |
+|  [ Tile 0 response ]                 [ Tile 1 response ]          |
+|  elapsed: 4.3s, chars: 1203          elapsed: 3.9s, chars: 872    |
+|  <OCR text here>                     <OCR text here>              |
+|  [Raw JSON]                          [Raw JSON]                   |
++-------------------------------------------------------------------+
+|  Final output (joined)                                            |
+|  <merged page text>                                               |
+|  [ Download .txt ]                                                |
++-------------------------------------------------------------------+
 ```
 
-**可视化要点**：
-1. **5 连图**是最关键的调试入口。看预处理管线哪一步出问题了一目了然（比如 deskew 过矫正、crop 切掉了正文）。
-2. **模型响应并排显示**：能看出两个切片是否都给出了合理结果，或者某一片完全空。
-3. **Raw JSON 折叠**：默认不显示、点开可看（含模型 `done_reason`、`eval_count` 等）。
-4. **elapsed / chars 小 badge**：快速扫一眼性能和产量。
+Visualization goals:
+
+1. The **five-image strip** is the primary debugging view. It makes preprocessing mistakes obvious, such as over-deskewing or crop cutting off body text.
+2. **Side-by-side model responses** show whether each tile produced reasonable text or whether one tile came back empty.
+3. **Raw JSON collapse panels** stay hidden by default but are available for model metadata such as `done_reason` and `eval_count`.
+4. Small **elapsed / chars badges** let the user scan performance and output volume quickly.
+5. The UI should always show where the persisted OCR text lives, for example `data/ocr_text/<doc_id>/p012.txt`, and whether that file is parseable and non-empty.
 
 ## 8. Docker
 
-`docker/ocr.Dockerfile`：
+`docker/ocr.Dockerfile`:
+
 ```dockerfile
 FROM llm-pipeline-base:latest
 USER root
@@ -186,12 +183,14 @@ USER 10001:10001
 ```
 
 `requirements/ocr.txt`:
-```
+
+```text
 opencv-python-headless>=4.8.0
 numpy>=1.26.0
 ```
 
-Compose 片段：
+Compose fragment:
+
 ```yaml
   ocr:
     build:
@@ -211,36 +210,44 @@ Compose 片段：
       'modules.ocr.standalone:create_app()'
 ```
 
-`--timeout 1800`：单页 OCR 可能几十秒到几分钟，不要让 gunicorn 杀掉 worker。
+`--timeout 1800`: a single OCR page may take tens of seconds or minutes, so gunicorn must not kill the worker prematurely.
 
-## 9. 测试
+## 9. Tests
 
-**单元测试**（无 LLM）：
-- `preprocessing.py` 每个函数对 clean/skewed/noisy fixture 验证输出尺寸、不抛异常
-- `cleanup_ocr_text` 对含 markdown fence 的响应能清理
-- `should_skip_existing` 对空文件、`[OCR_EMPTY]`、正常文本的行为
+Unit tests without LLM:
 
-**集成测试**（需要 Ollama）：
-- 放一张清晰英文页，期望 OCR 出某段字符串的子串
-- 放一张空白页，期望输出 `[OCR_EMPTY]`
+- Each `preprocessing.py` function should process clean, skewed, and noisy fixtures without throwing and with valid output dimensions.
+- `cleanup_ocr_text` should remove markdown fences.
+- `should_skip_existing` should behave correctly for empty files, `[OCR_EMPTY]`, and normal text.
 
-这种集成测试用 `pytest -m integration` 标记，CI 里可跳过。
+Integration tests requiring Ollama:
 
-## 10. 性能 / 故障
+- Use a clear English page and assert the OCR output contains a known substring.
+- Use a blank page and assert the output is `[OCR_EMPTY]`.
+- Add a sample-input smoke test that runs OCR on 2 to 5 selected pages from the local sample PDFs.
+- Add a manual full-input resume test: start OCR on a large PDF, stop after several pages, restart, and verify completed `pNNN.txt` files are skipped.
 
-- **单页耗时**：glm-ocr 7B 在 16GB GPU 上每切片约 3–10s，每页两切片约 6–20s
-- **大批量**：默认串行。要并发需要 Ollama 侧支持 multi-slot，或跑多实例
-- **OOM**：图像太大导致 vision 模型 OOM → 调小 `preprocess_long` 参数
-- **模型幻觉**：vision 模型偶尔给出"文档看起来是 X"这种说明性文字而非 OCR → prompt 里已明令禁止，但出现时要在 `cleanup_ocr_text` 里加模式剥离
+Mark these integration tests with `pytest -m integration` so CI can skip them.
 
-## 11. 构建检查清单
+## 10. Performance / Failure Modes
 
-- [ ] `preprocessing.py` 所有函数搬过来 + 独立单测通过
-- [ ] `core.py` 的 `ocr_page` / `run_folder` 能跑
-- [ ] `cleanup_ocr_text` 去除 fence、去除说明性文字
-- [ ] Blueprint 所有路由实现
-- [ ] CLI 与原脚本参数兼容
-- [ ] 测试 UI：能看到 5 连预处理图 + 两切片响应 + 最终合并文本
-- [ ] 断点续跑（`should_skip_existing`）生效
-- [ ] Debug 开启时 `_debug/` 目录生成对应文件
-- [ ] 独立容器能拉起
+- **Single-page time**: glm-ocr 7B on a 16 GB GPU takes about 3 to 10 seconds per tile, or 6 to 20 seconds per two-tile page.
+- **Large batches**: default to serial processing. Parallelism requires Ollama multi-slot support or multiple instances.
+- **Intermediate storage**: OCR text is expected to accumulate under `data/ocr_text/`. It should be small compared with rendered images and must not be deleted automatically.
+- **OOM**: if an image is too large and the vision model OOMs, reduce the `preprocess_long` parameter.
+- **Model hallucination**: vision models sometimes return explanatory prose like "the document appears to be X" instead of OCR text. The prompt forbids this, but `cleanup_ocr_text` should strip known patterns if they appear.
+
+## 11. Build Checklist
+
+- [ ] All `preprocessing.py` functions are moved over and pass standalone unit tests.
+- [ ] `core.py` implements `ocr_page` and `run_folder`.
+- [ ] `cleanup_ocr_text` removes fences and explanatory prose.
+- [ ] All blueprint routes are implemented.
+- [ ] CLI is compatible with the original script arguments.
+- [ ] Test UI shows the five preprocessing images, tile responses, and final merged text.
+- [ ] OCR text is persisted as `data/ocr_text/<doc_id>/pNNN.txt` and surfaced in the UI.
+- [ ] OCR `manifest.json` records per-page status, timing, model, and character counts.
+- [ ] Resume behavior through `should_skip_existing` works.
+- [ ] `_debug/` artifacts are generated when debug is enabled.
+- [ ] Debug retention policy can avoid storing huge debug directories for successful pages.
+- [ ] Standalone container starts.

@@ -1,22 +1,24 @@
-# 模块 04 — page_classifier
+# Module 04 - page_classifier
 
-> 决定一页该不该抽、抽的话是什么报告类型。流水线里最简单的 LLM 模块，但决定了下游处理路径。
+> Decides whether a page should be extracted and, if so, what report type it is. This is the simplest LLM module in the pipeline, but it determines the downstream processing path.
 
-## 1. 目的
+## 1. Purpose
 
-给定一页 OCR 文本，一次 LLM 调用输出：
-- `should_extract: bool` — 抽 or 跳
+Given one page of OCR text, make a single LLM call and output:
+
+- `should_extract: bool`: extract or skip
 - `skip_reason: "index" | "record_metadata" | "bad_ocr" | null`
 - `report_type: "statement" | "transport/admin" | "correspondence"`
-- `evidence: str` — 一段不超过 25 词的引用
+- `evidence: str`: a quote of no more than 25 words
 
-这是所有下游模块的"门禁"。判错 extract/skip 会导致要么漏抽要么白抽。
+This is the gatekeeper for all downstream modules. A wrong extract/skip decision either misses data or wastes work.
 
-## 2. 输入 / 输出
+## 2. Input / Output
 
-**输入**：`data/ocr_text/<doc_id>/p*.txt`
+**Input**: `data/ocr_text/<doc_id>/p*.txt`
 
-**输出**：`data/intermediate/<doc_id>/p*.classify.json`
+**Output**: `data/intermediate/<doc_id>/p*.classify.json`
+
 ```json
 {
   "page": 12,
@@ -30,9 +32,9 @@
 }
 ```
 
-## 3. 核心算法
+## 3. Core Algorithm
 
-继承原代码 `model_page_decision`：
+Inherited from the original `model_page_decision`:
 
 ```python
 def classify(ocr: str, stats: CallStats, *, report_type_override=None) -> PageDecision:
@@ -41,48 +43,48 @@ def classify(ocr: str, stats: CallStats, *, report_type_override=None) -> PageDe
     schema = '{"should_extract":true,"skip_reason":null,"report_type":"statement","evidence":"..."}'
     obj = client.generate_json(render(PAGE_CLASSIFY_PROMPT, ocr=ocr), schema, stats, num_predict=500)
     decision = parse_page_decision(obj)
-    # 后置正则校正：某些强信号不容模型弄错
+    # Post-regex correction: some strong signals should not be overridden by the model.
     decision.report_type = override_report_type_from_ocr(ocr, decision.report_type)
     return decision
 ```
 
-`override_report_type_from_ocr` 是重要的兜底：当原文明显匹配 `"Statement of"` / `"repatriation"` / `"certificate delivered"` 等关键 pattern 时，强制覆盖模型判断（模型偶尔会把明显是 statement 的页判成 correspondence）。
+`override_report_type_from_ocr` is an important fallback. If the text clearly matches patterns such as `"Statement of"`, `"repatriation"`, or `"certificate delivered"`, it forcefully corrects the model's report type. The model can occasionally label an obvious statement page as correspondence.
 
-Prompt 从 `config/prompts/page_classify.txt` 加载（原 `PAGE_CLASSIFY_PROMPT` 原样搬）。
+Load the prompt from `config/prompts/page_classify.txt`, moved from the original `PAGE_CLASSIFY_PROMPT`.
 
-## 4. 目录结构
+## 4. Directory Structure
 
-```
+```text
 src/modules/page_classifier/
-├── __init__.py
-├── core.py              # classify()
-├── rules.py             # STATEMENT_REPORT_PAT / TRANSPORT_ADMIN_REPORT_PAT 等正则
-├── parsing.py           # parse_page_decision()
-├── blueprint.py
-├── standalone.py
-├── cli.py
-├── templates/
-│   └── ui.html
-└── tests/
-    ├── test_rules.py
-    ├── test_parsing.py
-    └── fixtures/
-        ├── statement_page.txt
-        ├── transport_page.txt
-        ├── index_page.txt
-        └── bad_ocr_page.txt
+|-- __init__.py
+|-- core.py              # classify()
+|-- rules.py             # STATEMENT_REPORT_PAT / TRANSPORT_ADMIN_REPORT_PAT and similar regexes
+|-- parsing.py           # parse_page_decision()
+|-- blueprint.py
+|-- standalone.py
+|-- cli.py
+|-- templates/
+|   `-- ui.html
+`-- tests/
+    |-- test_rules.py
+    |-- test_parsing.py
+    `-- fixtures/
+        |-- statement_page.txt
+        |-- transport_page.txt
+        |-- index_page.txt
+        `-- bad_ocr_page.txt
 ```
 
 ## 5. Blueprint API
 
-| 方法 | 路径 | 行为 |
+| Method | Path | Behavior |
 |---|---|---|
-| GET  | `/classify/` | 测试 UI |
-| GET  | `/classify/docs` | 可分类的 doc_id 列表（已完成 OCR 的） |
-| GET  | `/classify/pages/<doc_id>` | 该 doc 所有 OCR 完成的页 |
-| POST | `/classify/run-single/<doc_id>/<page>` | 单页分类 + 返回结果 |
-| POST | `/classify/run-all/<doc_id>` | 整 doc 异步批跑 |
-| GET  | `/classify/result/<doc_id>/<page>` | 已有结果 |
+| GET | `/classify/` | Test UI |
+| GET | `/classify/docs` | List classifiable `doc_id` values with completed OCR |
+| GET | `/classify/pages/<doc_id>` | List all OCR-completed pages for the document |
+| POST | `/classify/run-single/<doc_id>/<page>` | Classify one page and return the result |
+| POST | `/classify/run-all/<doc_id>` | Classify the whole document asynchronously |
+| GET | `/classify/result/<doc_id>/<page>` | Return an existing result |
 
 ## 6. CLI
 
@@ -91,53 +93,46 @@ python -m modules.page_classifier.cli \
   --in_dir /data/ocr_text/myDoc \
   --out_dir /data/intermediate/myDoc \
   --model qwen2.5:14b-instruct \
-  [--report-type statement]      # 强制覆盖（调试用）
+  [--report-type statement]      # Forced override for debugging
 ```
 
-## 7. 测试 UI 设计
+## 7. Test UI Design
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│  Doc: [ myDoc ▼ ]   Page: [ p012 ▼ ]                            │
-│  [ Classify this page ]                                          │
-├─────────────────────────────────────────────────────────────────┤
-│  ┌─ Verdict ───────────────────────────────────────────────────┐│
-│  │ should_extract:  ✅ YES                                       ││
-│  │ report_type:     ┃ STATEMENT ┃  (badge)                      ││
-│  │ skip_reason:     —                                           ││
-│  │ evidence:        "Statement of slave Mariam bint Yusuf..."   ││
-│  │ model_calls:     1   repair_calls: 0   elapsed: 3.4s         ││
-│  └──────────────────────────────────────────────────────────────┘│
-├─────────────────────────────────────────────────────────────────┤
-│  Regex override check                                            │
-│  STATEMENT pattern:     ✓ matched  → would override → no change  │
-│  TRANSPORT/ADMIN:       ✗ not matched                            │
-├─────────────────────────────────────────────────────────────────┤
-│  ┌─ OCR text ──────────────────────────────────────────────────┐│
-│  │ Statement of slave Mariam bint Yusuf, aged about 20 years, ▓││  ← evidence 高亮
-│  │ a native of Zanzibar, who states:—                           ││
-│  │ I was kidnapped when I was about 10 years old from my...     ││
-│  │ ...                                                          ││
-│  └──────────────────────────────────────────────────────────────┘│
-├─────────────────────────────────────────────────────────────────┤
-│  [ Raw model response ▼ ]                                        │
-│  {                                                               │
-│    "should_extract": true,                                       │
-│    "skip_reason": null,                                          │
-│    ...                                                           │
-│  }                                                               │
-└─────────────────────────────────────────────────────────────────┘
+```text
++-----------------------------------------------------------------+
+|  Doc: [ myDoc ]   Page: [ p012 ]                                |
+|  [ Classify this page ]                                         |
++-----------------------------------------------------------------+
+|  Verdict                                                        |
+|  should_extract: YES                                            |
+|  report_type:     STATEMENT                                     |
+|  skip_reason:     -                                             |
+|  evidence:        "Statement of slave Mariam bint Yusuf..."     |
+|  model_calls: 1   repair_calls: 0   elapsed: 3.4s               |
++-----------------------------------------------------------------+
+|  Regex override check                                           |
+|  STATEMENT pattern:       matched -> would override -> no change |
+|  TRANSPORT/ADMIN pattern: not matched                            |
++-----------------------------------------------------------------+
+|  OCR text with evidence highlighted                             |
+|  Statement of slave Mariam bint Yusuf, aged about 20 years, ... |
++-----------------------------------------------------------------+
+|  [ Raw model response ]                                         |
+|  { "should_extract": true, "skip_reason": null, ... }           |
++-----------------------------------------------------------------+
 ```
 
-**可视化要点**：
-- **Verdict 徽章**：不同 report_type 不同颜色（statement 绿 / transport 蓝 / correspondence 灰）
-- **evidence 在原文里高亮**：用字符串模糊匹配定位，找不到时提示 "evidence not located in text"
-- **Regex override 对比**：如果规则和模型判断不一致要显眼提示
-- **Raw response 折叠**：偶尔需要看原始 JSON debug
+Visualization goals:
+
+- **Verdict badge**: different `report_type` values should use different colors, for example statement green, transport blue, and correspondence gray.
+- **Evidence highlighted in source text**: use fuzzy string matching; if the evidence cannot be located, show "evidence not located in text".
+- **Regex override comparison**: if rules and model output disagree, the UI should call that out clearly.
+- **Raw response collapse panel**: useful for occasional JSON debugging.
 
 ## 8. Docker
 
-`docker/ner.Dockerfile`（所有 NER 模块共用一个镜像）：
+`docker/ner.Dockerfile`, shared by all NER modules:
+
 ```dockerfile
 FROM llm-pipeline-base:latest
 COPY src/modules/page_classifier /app/modules/page_classifier
@@ -149,7 +144,8 @@ COPY config/prompts /app/config/prompts
 USER 10001:10001
 ```
 
-Compose：
+Compose:
+
 ```yaml
   page_classifier:
     build:
@@ -168,20 +164,22 @@ Compose：
       'modules.page_classifier.standalone:create_app()'
 ```
 
-## 9. 测试
+## 9. Tests
 
-**单元测试**：
-- `parse_page_decision` 对正确 JSON、缺字段、非法 report_type 的行为
-- `override_report_type_from_ocr` 三组 fixture 分别匹配 STATEMENT / TRANSPORT / 无匹配
+Unit tests:
 
-**集成测试**：
-- 4 个 fixture（statement / transport / index / bad_ocr）各自跑 `classify()`，断言输出类别
+- `parse_page_decision` behavior for valid JSON, missing fields, and invalid `report_type`.
+- `override_report_type_from_ocr` with fixtures that match STATEMENT, TRANSPORT, and no pattern.
 
-## 10. 构建检查清单
+Integration tests:
 
-- [ ] Prompt 抽到文件、`render_prompt` 正确注入
-- [ ] `choose_report_type` 支持 `LEGACY_REPORT_TYPE_MAP` 回退
-- [ ] `override_report_type_from_ocr` 覆盖逻辑正确
-- [ ] 支持 `--report-type` 强制覆盖（调试用）
-- [ ] 测试 UI 能看到 verdict + evidence 高亮 + 规则对比
-- [ ] 4 个 fixture 测试都通过
+- Run `classify()` on four fixtures: statement, transport, index, and bad OCR. Assert the expected categories.
+
+## 10. Build Checklist
+
+- [ ] Prompt is moved to a file and `render_prompt` injects it correctly.
+- [ ] `choose_report_type` supports `LEGACY_REPORT_TYPE_MAP` fallback.
+- [ ] `override_report_type_from_ocr` has correct override behavior.
+- [ ] `--report-type` forced override is supported for debugging.
+- [ ] Test UI shows verdict, evidence highlighting, and rule comparison.
+- [ ] All four fixture tests pass.

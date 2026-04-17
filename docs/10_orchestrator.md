@@ -1,32 +1,34 @@
-# 模块 10 — orchestrator
+# Module 10 - orchestrator
 
-> 流水线编排器。把 02~09 所有模块串成一条端到端的线，跟踪每页进度，支持断点续跑。
+> Pipeline orchestrator. Connects modules 02 through 09 into an end-to-end pipeline, tracks per-page progress, and supports resume.
 
-## 1. 目的
+## 1. Purpose
 
-前面的模块各自能工作，但**各自工作**不等于**整条流水线能工作**。这个模块负责：
+The earlier modules can each work on their own, but **working individually** is not the same as **a working full pipeline**. This module is responsible for:
 
-1. 对一个 `doc_id`，按顺序触发 02→03→04→05→06→07→09 的各阶段
-2. 每阶段按**页粒度**调度（一页 OCR 完就可以开始 classify，不必等全部 OCR 完）
-3. 状态持久化到 `data/logs/<doc_id>/job.json`，进程重启能恢复
-4. 幂等：已有产物的步骤直接跳过
-5. 给 web_app 的 Dashboard 提供实时状态 + 日志流
-6. 不做业务逻辑 —— 所有处理由 02~09 完成，它只是调度
+1. For a given `doc_id`, triggering stages 02 -> 03 -> 04 -> 05 -> 06 -> 07 -> 09 in order.
+2. Scheduling by **page granularity**. A page can start classification as soon as OCR for that page finishes; it does not need to wait for the whole document OCR to finish.
+3. Persisting state to `data/logs/<doc_id>/job.json` so a restarted process can resume.
+4. Idempotency: stages with existing artifacts are skipped.
+5. Treating intermediate artifacts, especially OCR text and per-page JSON, as first-class state visible in the dashboard.
+6. Providing real-time status and log streams to the `web_app` dashboard.
+7. Avoiding business logic. All processing is performed by modules 02 through 09; the orchestrator only schedules.
 
-## 2. 输入 / 输出
+## 2. Input / Output
 
-**输入**：`data/input_pdfs/<doc_id>.pdf`（或已经拆完页的 `data/pages/<doc_id>/`）
+**Input**: `data/input_pdfs/<doc_id>.pdf`, or an already-ingested `data/pages/<doc_id>/` directory.
 
-**输出**：最终的 `data/output/<doc_id>/*.csv`（实际由 aggregator 写，编排器只是触发）
+**Output**: final `data/output/<doc_id>/*.csv` files. These are written by the aggregator; the orchestrator only triggers it.
 
-**中间产物**：`data/logs/<doc_id>/`
+**Intermediate artifacts**: `data/logs/<doc_id>/`
+
+```text
+|-- job.json           # Current job state
+|-- pipeline.log       # Human-readable log
+`-- events.jsonl       # Event stream consumed by dashboard
 ```
-├── job.json           # 当前 job 状态
-├── pipeline.log       # 人读日志
-└── events.jsonl       # 事件流（dashboard 订阅）
-```
 
-## 3. Job 状态模型
+## 3. Job State Model
 
 ```python
 class Job(BaseModel):
@@ -36,7 +38,7 @@ class Job(BaseModel):
     created_at: datetime
     updated_at: datetime
     total_pages: int
-    pages: List[PageState]         # 每页一项
+    pages: List[PageState]         # One item per page
     counters: dict                 # model_calls / elapsed / ...
 
 class PageState(BaseModel):
@@ -56,7 +58,7 @@ class StageStatus(BaseModel):
     elapsed_seconds: float = 0
 ```
 
-`aggregate` 不在页级，是 job 级的最后一步单独字段：
+`aggregate` is job-level rather than page-level, so it appears as a separate field:
 
 ```python
 class Job(BaseModel):
@@ -64,27 +66,27 @@ class Job(BaseModel):
     aggregate: StageStatus
 ```
 
-## 4. 核心调度算法
+## 4. Core Scheduling Algorithm
 
-**原则**：文件系统是 source of truth。编排器每次决定"下一步做什么"时，只看文件是否存在，不信任内存状态（进程可能重启）。
+Principle: the filesystem is the source of truth. Every time the orchestrator decides what to run next, it checks whether files exist. It does not trust only in-memory state, because the process may have restarted.
 
 ```python
 def run_document(doc_id: str, resume: bool = True) -> Job:
     job = load_or_create_job(doc_id)
     paths = doc_paths(doc_id)
 
-    # Stage 1: ingest (整 doc 一次)
+    # Stage 1: ingest, once per document
     if not paths.manifest().exists():
         call_module("pdf_ingest", {"doc_id": doc_id})
     job.total_pages = read_manifest(paths)["page_count"]
 
-    # Stages 2-6: 按页处理（串行，后续可并行）
+    # Stages 2-6: page-level processing, serial for now
     for p in range(1, job.total_pages + 1):
         run_page(doc_id, p, job)
-        save_job(job)               # 每页后持久化
+        save_job(job)               # Persist after every page
         emit_event(job_id, "page_updated", p)
 
-    # Stage 7: aggregate (整 doc 一次)
+    # Stage 7: aggregate, once per document
     if any_intermediate_exists(paths):
         call_module("aggregator", {"doc_id": doc_id})
         job.aggregate.state = "done"
@@ -99,7 +101,7 @@ def run_page(doc_id, p, job):
     state = job.pages[p-1]
 
     # OCR
-    if not paths.ocr_text(p).exists():
+    if not artifact_ok(paths.ocr_text(p), kind="ocr_text"):
         state.ocr.state = "running"; emit_stage_start(job, p, "ocr")
         try:
             call_module("ocr", {"doc_id": doc_id, "page": p})
@@ -111,10 +113,10 @@ def run_page(doc_id, p, job):
         state.ocr.state = "done"        # skipped
 
     # classify
-    if not paths.classify(p).exists():
+    if not artifact_ok(paths.classify(p), kind="json"):
         ...
 
-    # 若 classify.should_extract==false → 跳过 names/meta/places
+    # If classify.should_extract == false, skip names/meta/places.
     decision = read_json(paths.classify(p))
     if not decision["should_extract"]:
         state.names.state = "skipped"
@@ -123,17 +125,19 @@ def run_page(doc_id, p, job):
         return
 
     # names
-    if not paths.names(p).exists():
+    if not artifact_ok(paths.names(p), kind="json"):
         ...
 
-    # meta + places 可并行（两者都只依赖 ocr_text 和 names）
+    # meta and places can run in parallel; both depend only on ocr_text and names.
     run_parallel([
         ("meta",   lambda: call_module("meta",   {"doc_id":doc_id,"page":p})),
         ("places", lambda: call_module("places", {"doc_id":doc_id,"page":p})),
     ])
 ```
 
-**模块间通信**：`call_module` 是一层抽象。**首选 HTTP**（每个模块的 blueprint），**次选直接函数调用**（在主 web_app 模式下所有模块在同一进程）。这个抽象让同一套调度既能在独立容器部署下工作，也能在单体进程下工作。
+Module communication: `call_module` is an abstraction. Prefer **HTTP** when modules run as independent services, and use **direct function calls** when everything is mounted in the main `web_app` process. The same scheduling logic works in both deployment modes.
+
+`artifact_ok` should check more than existence. For text artifacts, require a non-empty file or the explicit `[OCR_EMPTY]` marker. For JSON artifacts, require that the file parses and contains the expected page number. Corrupt or partial files should trigger a rerun of that stage and any downstream stage that depends on it.
 
 ```python
 # orchestrator/router.py
@@ -144,98 +148,92 @@ def call_module(name: str, payload: dict):
         r.raise_for_status()
         return r.json()
     else:
-        # 直接调 core，适合单体模式（更快，没有 http 序列化开销）
+        # Direct core calls, faster in monolith mode with no HTTP serialization.
         return DISPATCH[name](payload)
 ```
 
-## 5. 目录结构
+## 5. Directory Structure
 
-```
+```text
 src/orchestrator/
-├── __init__.py
-├── pipeline.py          # run_document / run_page
-├── job_store.py         # load_job / save_job（JSON 文件，原子写）
-├── router.py            # call_module 抽象
-├── events.py            # emit_event 到 events.jsonl，供 SSE 读
-├── blueprint.py         # /orchestrate/* 路由
-├── templates/
-│   ├── dashboard.html   # 主 dashboard 页
-│   └── _partials/
-│       ├── status_grid.html
-│       └── log_tail.html
-├── static/
-│   ├── dashboard.css
-│   └── dashboard.js     # SSE + DOM 更新
-└── tests/
-    ├── test_pipeline_mocked.py
-    └── test_job_store.py
+|-- __init__.py
+|-- pipeline.py          # run_document / run_page
+|-- job_store.py         # load_job / save_job, JSON files with atomic writes
+|-- router.py            # call_module abstraction
+|-- events.py            # emit_event to events.jsonl for SSE
+|-- blueprint.py         # /orchestrate/* routes
+|-- templates/
+|   |-- dashboard.html   # Main dashboard page
+|   `-- _partials/
+|       |-- status_grid.html
+|       `-- log_tail.html
+|-- static/
+|   |-- dashboard.css
+|   `-- dashboard.js     # SSE + DOM updates
+`-- tests/
+    |-- test_pipeline_mocked.py
+    `-- test_job_store.py
 ```
 
 ## 6. Blueprint API
 
-| 方法 | 路径 | 行为 |
+| Method | Path | Behavior |
 |---|---|---|
-| GET  | `/orchestrate/` | Dashboard UI |
-| GET  | `/orchestrate/jobs` | 所有 job 列表 |
-| POST | `/orchestrate/run` | `{"doc_id":"..."}` → 启动 job（异步），返回 `job_id` |
-| POST | `/orchestrate/resume/<doc_id>` | 恢复之前断掉的 job |
-| POST | `/orchestrate/cancel/<job_id>` | 软取消（当前阶段跑完后停） |
-| GET  | `/orchestrate/status/<doc_id>` | 当前 job 状态（`Job` JSON） |
-| GET  | `/orchestrate/stream/<doc_id>` | **SSE 事件流**：`page_updated` / `log` / `done` |
-| GET  | `/orchestrate/log/<doc_id>` | 返回最近 N 行 pipeline.log |
+| GET | `/orchestrate/` | Dashboard UI |
+| GET | `/orchestrate/jobs` | List all jobs |
+| POST | `/orchestrate/run` | `{"doc_id":"..."}` -> start an async job and return `job_id` |
+| POST | `/orchestrate/resume/<doc_id>` | Resume a previously interrupted job |
+| POST | `/orchestrate/cancel/<job_id>` | Soft-cancel after the current stage finishes |
+| GET | `/orchestrate/status/<doc_id>` | Current job state as `Job` JSON |
+| GET | `/orchestrate/artifacts/<doc_id>/<page>` | Artifact state for one page: page image, OCR text, classify JSON, names JSON, meta JSON, places JSON |
+| GET | `/orchestrate/stream/<doc_id>` | **SSE event stream**: `page_updated` / `log` / `done` |
+| GET | `/orchestrate/log/<doc_id>` | Return the most recent N lines from `pipeline.log` |
 
-**SSE 设计**：前端 `new EventSource('/orchestrate/stream/myDoc')` 订阅，服务端 `tail -f events.jsonl` 转成 SSE。简单、可靠、不需要 WebSocket。
+SSE design: the front end subscribes with `new EventSource('/orchestrate/stream/myDoc')`. The server tails `events.jsonl` and converts it to SSE. This is simple and reliable, and it does not require WebSocket.
 
-## 7. Dashboard UI（**这是整个项目最重要的 UI**）
+## 7. Dashboard UI
 
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│  Pipeline dashboard — myDoc                      Status: 🟢 running   │
-│  [ Cancel ]   [ Pause ]   [ View logs ]                              │
-├──────────────────────────────────────────────────────────────────────┤
-│  Overall progress                                                     │
-│  ingest  ████████████████████ 100%                                    │
-│  ocr     ██████████████▒▒▒▒▒▒  72% (99/137)                           │
-│  classi. ████████████▒▒▒▒▒▒▒▒  60% (82/137)                           │
-│  names   █████████▒▒▒▒▒▒▒▒▒▒▒  45% (62/137)                           │
-│  meta    ████████▒▒▒▒▒▒▒▒▒▒▒▒  40% (55/137)                           │
-│  places  ███████▒▒▒▒▒▒▒▒▒▒▒▒▒  35% (48/137)                           │
-│  aggreg. ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒   0%                                    │
-│                                                                        │
-│  Counters: 412 model calls, 11 repair calls, elapsed 00:18:42          │
-├──────────────────────────────────────────────────────────────────────┤
-│  Per-page status (click any row to open that page in module UIs)      │
-│  ┌──┬────┬──────┬──────┬────┬──────┬──────┬──────────────────────────┐│
-│  │p │ing │ ocr  │ cls  │nm  │meta  │place │ notes                   ││
-│  ├──┼────┼──────┼──────┼────┼──────┼──────┼──────────────────────────┤│
-│  │ 1│ 🟢 │  🟢  │  🟢  │ ─  │  ─   │  ─   │ skipped: index page      ││
-│  │ 2│ 🟢 │  🟢  │  🟢  │ 🟢 │  🟢  │  🟢  │ 2 ppl, 5 places          ││
-│  │..│    │      │      │    │      │      │                          ││
-│  │12│ 🟢 │  🟢  │  🟢  │ 🟢 │  🟡  │  🟡  │ running...               ││
-│  │13│ 🟢 │  🟢  │  🟡  │ ⚫ │  ⚫  │  ⚫  │ queued                   ││
-│  │..│    │      │      │    │      │      │                          ││
-│  │75│ 🟢 │  🔴  │  ⚫  │ ⚫ │  ⚫  │  ⚫  │ OCR failed: timeout      ││
-│  └──┴────┴──────┴──────┴────┴──────┴──────┴──────────────────────────┘│
-│  🟢 done  🟡 running  ⚫ queued  ─ skipped  🔴 failed                   │
-├──────────────────────────────────────────────────────────────────────┤
-│  Live log tail                                                        │
-│  ┌──────────────────────────────────────────────────────────────────┐ │
-│  │ [18:42:13] page 12 meta done (4.1s, 1 call)                      │ │
-│  │ [18:42:15] page 13 classify start                                │ │
-│  │ [18:42:17] page 12 places running (person 1/2)                   │ │
-│  │ ...                                                              │ │
-│  └──────────────────────────────────────────────────────────────────┘ │
-└──────────────────────────────────────────────────────────────────────┘
+This is the most important UI in the project:
+
+```text
++----------------------------------------------------------------------+
+|  Pipeline dashboard - myDoc                         Status: running  |
+|  [ Cancel ]   [ Pause ]   [ View logs ]                              |
++----------------------------------------------------------------------+
+|  Overall progress                                                     |
+|  ingest  100%                                                         |
+|  ocr      72% (99/137)                                                |
+|  classi.  60% (82/137)                                                |
+|  names    45% (62/137)                                                |
+|  meta     40% (55/137)                                                |
+|  places   35% (48/137)                                                |
+|  aggreg.   0%                                                         |
+|  Counters: 412 model calls, 11 repair calls, elapsed 00:18:42         |
++----------------------------------------------------------------------+
+|  Per-page status. Click any row or cell to open the module UI.        |
+|  p | ing | ocr | cls | nm | meta | place | notes                     |
+|  1 | done| done| done| -  | -    | -     | skipped: index page       |
+|  2 | done| done| done|done| done | done  | 2 ppl, 5 places           |
+| 12 | done| done| done|done|running|running| running...              |
+| 13 | done| done|running|queued|queued|queued| queued                |
+| 75 | done| failed|queued|queued|queued|queued| OCR failed: timeout  |
++----------------------------------------------------------------------+
+|  Live log tail                                                        |
+|  [18:42:13] page 12 meta done (4.1s, 1 call)                         |
+|  [18:42:15] page 13 classify start                                   |
+|  [18:42:17] page 12 places running (person 1/2)                      |
++----------------------------------------------------------------------+
 ```
 
-**可视化要点**：
+Visualization goals:
 
-1. **总进度条分阶段**：一眼看哪个阶段最慢（通常是 names_extractor）
-2. **每页每阶段状态格**：137 页 × 6 阶段的点阵图最有冲击力，哪页卡住一目了然
-3. **点行跳转**：点 p12 那行的 "meta" 格子跳到 metadata_extractor UI 并自动选中 p12
-4. **颜色语义统一**：🟢 done / 🟡 running / ⚫ queued / ─ skipped / 🔴 failed
-5. **SSE 实时更新**：不刷新页面，状态格实时变色、log 自动滚屏
-6. **失败不停车**：某页某阶段失败后，其他页继续跑；failed 页在最后汇总报告
+1. **Stage-level progress bars** show which stage is slow, usually `name_extractor`.
+2. **Per-page stage grid** gives a compact 137 pages by 6 stages view, making stuck pages obvious.
+3. **Clickable rows/cells** jump to the corresponding module UI with the page preselected.
+4. **Artifact panel** shows the actual files behind a page, including `pNNN.png`, `pNNN.txt`, and each JSON file, with size, modified time, and parse status.
+5. **Unified status colors**: done / running / queued / skipped / failed.
+6. **SSE real-time updates**: the page does not refresh; cells and log tail update live.
+7. **Failure does not stop the whole run**: if one page fails at a stage, other pages continue. Failed pages are summarized at the end.
 
 ## 8. Docker
 
@@ -262,43 +260,47 @@ src/orchestrator/
       - ORCH_MODE=http
       - ORCH_MODULE_URLS_JSON={"ocr":"http://ocr:5103",...}
     profiles: [ "all" ]
-    # 注意：没有 ports，仅内部可见，通过 web_app 反代
+    # Note: no ports; internal only, accessed through web_app proxy
 ```
 
-**单体模式下**不需要启这个独立容器：`ORCH_MODE=inproc` + 挂到 web_app 里，直接调 Python 函数。
+In monolith mode, this independent container is not needed. Use `ORCH_MODE=inproc`, mount the blueprint in `web_app`, and call Python functions directly.
 
-## 9. 测试
+## 9. Tests
 
-**单元测试**（mock 所有 call_module）：
-- `test_pipeline_happy_path`：3 页全成功
-- `test_pipeline_one_page_fails`：一页 OCR 失败，其他页继续
-- `test_resume_skips_done_pages`：第二次运行跳过已完成
-- `test_skip_reason_propagates`：classify 判定 `should_extract=false` 时跳过下游
+Unit tests with all `call_module` calls mocked:
 
-**集成测试**（用最小真实 PDF）：
-- 2 页 PDF 跑通全链路，CSV 行数正确
+- `test_pipeline_happy_path`: three pages all succeed.
+- `test_pipeline_one_page_fails`: one page fails OCR and other pages continue.
+- `test_resume_skips_done_pages`: the second run skips completed artifacts.
+- `test_skip_reason_propagates`: when `classify.should_extract=false`, downstream stages are skipped.
 
-## 10. 故障排查
+Integration test:
 
-| 症状 | 原因 | 对策 |
+- Run a two-page real PDF through the full pipeline and verify CSV row counts.
+
+## 10. Troubleshooting
+
+| Symptom | Cause | Fix |
 |---|---|---|
-| Dashboard 所有格子一直灰 | SSE 没连上 | 检查 web_app 反代 `/orchestrate/stream` 是否透传 `text/event-stream` |
-| 某页卡 `running` 很久 | 对应模块 HTTP 超时 | 看该模块容器日志；调大 `requests.post(timeout=)` |
-| resume 后又重跑了 done 页 | 产物文件缺失或损坏 | 幂等判断是看**文件存在 + 非空 + 能 parse**；坏文件会触发重跑 |
-| job.json 损坏 | 半写入 | job_store 用原子写；实在坏了删了重跑 |
+| Dashboard cells stay gray | SSE is not connected | Check that `web_app` proxy passes `/orchestrate/stream` as `text/event-stream` |
+| One page stays `running` for a long time | The corresponding module HTTP call timed out | Check that module's container logs and increase `requests.post(timeout=)` |
+| Resume reruns completed pages | Artifact file is missing or corrupt | Idempotency checks file exists, is non-empty, and can parse; bad files trigger rerun |
+| `job.json` is corrupt | Partial write | `job_store` should use atomic writes; if unrecoverable, delete it and rerun |
 
-## 11. 构建检查清单
+## 11. Build Checklist
 
-- [ ] `Job` / `PageState` / `StageStatus` 模型定义
-- [ ] `run_document` / `run_page` 串通所有阶段
-- [ ] `call_module` 支持 http / inproc 两种 mode
-- [ ] `job_store` 原子写
-- [ ] `events.jsonl` + SSE 流
-- [ ] 幂等：每阶段按文件存在性跳过
-- [ ] `classify.should_extract=false` 正确传播（跳 names/meta/places）
-- [ ] meta + places 并行
-- [ ] Dashboard UI：总进度 + 状态格 + 日志 + SSE
-- [ ] 状态格可点跳转对应模块 UI
-- [ ] resume / cancel 按钮可用
-- [ ] 单测 4 个典型场景
-- [ ] 2 页真实 PDF 集成测试通过
+- [ ] `Job`, `PageState`, and `StageStatus` models are defined.
+- [ ] `run_document` and `run_page` connect all stages.
+- [ ] `call_module` supports both `http` and `inproc` modes.
+- [ ] `job_store` writes atomically.
+- [ ] `events.jsonl` and SSE stream work.
+- [ ] Idempotency skips each stage based on artifact existence.
+- [ ] Artifact validation checks non-empty OCR text and parseable JSON, not just file existence.
+- [ ] Dashboard exposes artifact paths, sizes, timestamps, and parse status per page.
+- [ ] `classify.should_extract=false` correctly propagates and skips names/meta/places.
+- [ ] meta and places run in parallel.
+- [ ] Dashboard UI includes overall progress, status grid, logs, and SSE.
+- [ ] Status cells can jump to the corresponding module UI.
+- [ ] Resume and cancel buttons work.
+- [ ] Four typical unit tests pass.
+- [ ] Two-page real PDF integration test passes.

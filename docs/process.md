@@ -1,343 +1,385 @@
-# Process — 构建顺序与步骤
+# Process - Build Order and Steps
 
-这份文档讲**按什么顺序搭这个系统**，以及每一步该产出什么、怎么验证。严格按顺序走能让每一阶段都有东西可跑、可看、可测，不会一口气写完再调试。
+This document explains **the order for building the system**, what each step should produce, and how to verify it. Following the order strictly ensures that every phase has something runnable, visible, and testable instead of debugging everything only after the full system is written.
 
-## 指导原则
+## Guiding Principles
 
-1. **从下往上搭**：先搭共享库和基础设施，再搭依赖它们的处理模块，最后搭编排层。
-2. **先简后繁**：先做没有 LLM 依赖的模块（拆页、规范化、聚合），它们最容易写和测。
-3. **每阶段都可 demo**：每完成一个阶段都能打开浏览器看点东西，不攒到最后。
-4. **测试 UI 和核心逻辑同步写**：不要先写核心逻辑再回头补 UI，两者一起出。
-5. **Docker 化从第一天就有**：不要"先裸跑、最后装进容器"。头一个模块就进 Docker。
+1. **Build from the bottom up**: start with the shared library and infrastructure, then the processing modules that depend on them, and finally the orchestration layer.
+2. **Start simple, then add complexity**: implement non-LLM modules first, such as PDF splitting, normalization, and aggregation. They are easiest to write and test.
+3. **Make every phase demoable**: after every phase, there should be something visible in the browser.
+4. **Build test UI together with core logic**: do not write core logic first and come back later for the UI. Ship them together.
+5. **Use Docker from day one**: do not run bare scripts first and containerize at the end. The first module should already run in Docker.
+6. **Treat large PDFs as normal input**: real files may exceed 500 MB, so support both browser upload and registering files already placed in `data/input_pdfs/`.
+7. **Persist important intermediate artifacts**: page images, OCR text, per-page JSON, logs, and final CSVs must all be durable, visible in the UI, and usable for resume.
 
 ---
 
-## Phase 0：工程骨架（约 0.5 天）
+## Phase 0: Project Skeleton (about 0.5 day)
 
-在写任何业务逻辑之前，先把壳搭好。
+Before writing any business logic, create the shell of the project.
 
-### 要做的事
+### Tasks
 
-| # | 任务 | 产出 |
-|---|------|------|
-| 0.1 | 创建目录树 | 按 `overview.md` 里的文件结构 `mkdir -p` 全部目录 |
-| 0.2 | `.dockerignore` / `.gitignore` | 忽略 `data/`、`volumes/`、`__pycache__` |
-| 0.3 | `requirements/base.txt` | `requests`、`flask`、`jinja2`、`pydantic`、`gunicorn`、`pyyaml` |
-| 0.4 | `docker/base.Dockerfile` | `python:3.11-slim` + 非 root 用户 + 装 base 依赖 |
-| 0.5 | 空 `compose.yaml` + `compose.seed.yaml` | 先只定义 `ollama` 服务和两个 network |
-| 0.6 | `.env.example` 和 `config/` 配置骨架 | 列清楚环境变量 |
-| 0.7 | `src/shared/config.py` | 把所有路径、模型名、超时参数收口 |
-| 0.8 | `src/shared/logging_setup.py` | 统一日志格式 |
+| # | Task | Output |
+|---|---|---|
+| 0.1 | Create directory tree | Create every directory from the structure in `overview.md` |
+| 0.2 | `.dockerignore` / `.gitignore` | Ignore `*.pdf`, `data/`, `volumes/`, `__pycache__` |
+| 0.3 | `requirements/base.txt` | `requests`, `flask`, `jinja2`, `pydantic`, `gunicorn`, `pyyaml` |
+| 0.4 | `docker/base.Dockerfile` | `python:3.11-slim` plus non-root user and base dependencies |
+| 0.5 | Empty `compose.yaml` + `compose.seed.yaml` | Define only `ollama` and the two networks at first |
+| 0.6 | `.env.example` and `config/` skeleton | Document environment variables clearly |
+| 0.7 | `src/shared/config.py` | Centralize paths, model names, and timeout parameters |
+| 0.8 | `src/shared/logging_setup.py` | Unified log format |
 
-### 验证
+### Verification
 
 ```bash
-docker compose -f compose.yaml config        # 语法通过
-docker build -f docker/base.Dockerfile .     # base 镜像能构建
+docker compose -f compose.yaml config        # Compose syntax passes
+docker build -f docker/base.Dockerfile .     # Base image builds
 ```
 
-**不要**跳过这阶段。后面每个模块都会继承 base 镜像、用 `shared/config.py`、按统一目录约定工作。地基不稳后面会返工。
+Do **not** skip this phase. Every later module inherits the base image, uses `shared/config.py`, and follows unified directory conventions. Weak foundations cause rework later.
 
 ---
 
-## Phase 1：共享核心库（模块 00）+ Ollama 网关（模块 01）
+## Phase 1: Shared Core Library (Module 00) + Ollama Gateway (Module 01)
 
-这俩都不是可独立运行的"服务"，但是**所有后续模块都依赖它们**，必须先有。
+Neither of these is a standalone "business service", but **all later modules depend on them**, so they must exist first.
 
-### 1.1 模块 00 shared
+### 1.1 Module 00: shared
 
-把原 `ner_extract.py` 和 `glm_ocr_ollama.py` 里的以下东西抽到 `src/shared/`：
+Move the following pieces from the original `ner_extract.py` and `glm_ocr_ollama.py` into `src/shared/`:
 
-- `OllamaClient`（带重试、超时、JSON 提取、修复 prompt 的那一套）
-- JSON 提取工具 `extract_json`
-- 文本清洗 `clean_ocr` / `normalize_ws` / `strip_accents`
-- 路径约定 `paths.py`（给定 `doc_id` 返回所有相关目录）
-- 原子写入 `write_csv_atomic`
+- `OllamaClient`, including retries, timeouts, JSON extraction, and repair-prompt fallback
+- JSON extraction utility `extract_json`
+- Text cleanup utilities: `clean_ocr`, `normalize_ws`, `strip_accents`
+- Path conventions in `paths.py`, where a given `doc_id` returns all related directories
+- Atomic writes such as `write_csv_atomic`
 
-**怎么验证**：只写单元测试。这阶段还没 UI。
+Verification: write unit tests only. This phase has no UI.
+
 ```bash
 pytest src/shared/tests/
 ```
 
-### 1.2 模块 01 ollama_gateway
+### 1.2 Module 01: ollama_gateway
 
-这个模块"就是" Ollama 容器本身 + `OllamaClient` 的文档化使用约定。不写新代码，只写：
+This module is the Ollama container itself plus documented usage of `OllamaClient`. It does not need new Python code. Write:
 
-- `compose.yaml` 里 `ollama` 服务的完整定义（GPU、内部网络、无 ports、非 root、cap drop）
-- `compose.seed.yaml` 里 `ollama_seed` 服务（临时 `127.0.0.1:11434` 绑定，下载模型用）
-- `scripts/seed_model.sh`：一键拉模型
-- 健康检查：`GET /api/version`
+- Full `ollama` service definition in `compose.yaml`, including GPU, internal network, no ports, non-root user, and capability dropping.
+- `ollama_seed` service in `compose.seed.yaml`, temporarily bound to `127.0.0.1:11434` for model download.
+- `scripts/seed_model.sh` to pull a model.
+- Health check using `GET /api/version`.
 
-**怎么验证**：
+Verification:
+
 ```bash
 ./scripts/seed_model.sh qwen2.5:14b-instruct
 docker compose up -d ollama
-# 验证内部可达、主机不可达
+# Verify internal reachability and host isolation.
 docker run --rm --network llm-pipeline_llm_internal curlimages/curl http://ollama:11434/api/version
-curl http://127.0.0.1:11434/api/tags   # 应当 connection refused
+curl http://127.0.0.1:11434/api/tags   # Should be connection refused
 ```
 
-**里程碑 M1**：此刻你有一个跑着的 Ollama，内部可用、主机打不到。
+Milestone M1: Ollama is running, reachable internally, and unreachable from the host.
 
 ---
 
-## Phase 2：不依赖 LLM 的模块（最容易写的先做）
+## Phase 2: Non-LLM Modules
 
-这几个模块不碰 LLM，逻辑简单，但是整个流水线的入口和出口，先搞定它们意义很大。
+These modules do not touch the LLM. Their logic is simpler, and they are the pipeline's input and output boundary, so finish them early.
 
-### 2.1 模块 02 pdf_ingest（**先做这个**）
+### 2.1 Module 02: pdf_ingest
 
-- 功能：PDF → `data/pages/<doc_id>/p001.png, p002.png, ...` + `manifest.json`
-- 实现：PyMuPDF，每页渲染到 300 DPI PNG
-- **独立 UI**：上传 PDF 表单 → 拆页后的缩略图网格
-- Blueprint 路径：`/ingest/*`
-- CLI：`python -m modules.pdf_ingest.cli --pdf path/to.pdf --doc-id myDoc`
+- Function: PDF -> `data/pages/<doc_id>/p001.png, p002.png, ...` plus `manifest.json`.
+- Implementation: PyMuPDF, render every page to a 300 DPI PNG.
+- Support two input paths: browser upload for small/medium PDFs and existing-file registration for large PDFs already in `data/input_pdfs/`.
+- Render one page at a time, update the manifest incrementally, and support resume from a partial manifest.
+- Standalone UI: upload PDF form -> thumbnail grid after splitting.
+- Blueprint path: `/ingest/*`.
+- CLI: `python -m modules.pdf_ingest.cli --pdf path/to.pdf --doc-id myDoc`.
 
-**验证**：找一份小 PDF（几页），上传，看到缩略图，`data/pages/myDoc/` 里有对应 PNG。
+Verification: upload a small PDF with a few pages, see thumbnails, and confirm `data/pages/myDoc/` contains corresponding PNG files.
 
-### 2.2 模块 08 normalizer（纯 Python，易测）
+Also run an existing-file registration smoke test using one local sample PDF. For the fuller local PDF, run a page-range or interrupt/resume test instead of requiring the whole document in every dev loop.
 
-把 `ner_extract.py` 里所有规范化函数搬过来并分文件：
+### 2.2 Module 08: normalizer
 
-- `names.py`：`normalize_name`、`is_valid_name`、`names_maybe_same_person`、`merge_named_people`、`name_compare_tokens`
-- `places.py`：`normalize_place`、`is_valid_place`、`PLACE_MAP` 规则
-- `dates.py`：`to_iso_date`、`parse_first_date_in_text`、`extract_doc_year`
-- `evidence.py`：`clean_evidence`、`normalize_for_match`
+Move normalization functions from `ner_extract.py` and split them into files:
 
-**独立 UI**：一个单页 form，四个输入区（名字 / 地名 / 日期字符串 / 任意文本），右侧实时显示规范化结果 + 哪条规则命中了。这对调试极其有用。
+- `names.py`: `normalize_name`, `is_valid_name`, `names_maybe_same_person`, `merge_named_people`, `name_compare_tokens`
+- `places.py`: `normalize_place`, `is_valid_place`, `PLACE_MAP`
+- `dates.py`: `to_iso_date`, `parse_first_date_in_text`, `extract_doc_year`
+- `evidence.py`: `clean_evidence`, `normalize_for_match`
 
-**验证**：单测用原代码里各种 edge case（"shargah" → "Sharjah"、"17th May 1931" → ISO 等）。
+Standalone UI: a single-page form with inputs for name, place, date string, and free text. Show normalized results and matched rules in real time.
 
-### 2.3 模块 09 aggregator
+Verification: unit tests should cover original edge cases such as `"shargah" -> "Sharjah"` and `"17th May 1931" -> ISO`.
 
-- 功能：从 `data/intermediate/<doc_id>/*.json` 读取每页产出，合并、去重、写最终 CSV
-- 复用 `dedupe_place_rows`、`merge_named_people` 等（从 normalizer 导）
-- **独立 UI**：当前 CSV 表格预览 + 三列统计（总行数 / 唯一人名 / 唯一地点）+ 简单下载按钮
+### 2.3 Module 09: aggregator
 
-**验证**：塞一批假的 `.json` 进 `data/intermediate/demo/`，跑聚合，看 CSV 是否符合预期。
+- Function: read per-page outputs from `data/intermediate/<doc_id>/*.json`, merge, deduplicate, and write final CSVs.
+- Reuse `dedupe_place_rows`, `merge_named_people`, and related functions from normalizer.
+- Standalone UI: current CSV preview, three statistic columns, and download buttons.
 
-**里程碑 M2**：到这里你有三个能独立跑的模块。各自 UI 能看。Ollama 还没用上。
+Verification: put fake `.json` files into `data/intermediate/demo/`, run aggregation, and confirm the CSVs match expected output.
+
+Milestone M2: three modules can run independently and each has a visible UI. Ollama is not used yet.
 
 ---
 
-## Phase 3：OCR 模块（模块 03）
+## Phase 3: OCR Module (Module 03)
 
-OCR 是第一个碰 LLM 的模块，也是流水线里最重的视觉处理环节。单独作为一个 phase。
+OCR is the first LLM module and the heaviest vision-processing stage, so it gets its own phase.
 
-### 要做的事
+### Tasks
 
-- 把 `glm_ocr_ollama.py` 的图像处理拆成 `preprocessing.py`（`enhance_gray` / `deskew` / `crop_foreground` / `split_vertical_with_overlap`）
-- `core.py` 调 `OllamaClient` 的 vision 接口
-- Dockerfile 用 `docker/ocr.Dockerfile`，装 opencv
-- 断点续跑逻辑（`should_skip_existing`）从 `core.py` 复用
-- **独立 UI**（重要）：
-  - 左栏列当前 `data/pages/<doc_id>/` 所有 PNG
-  - 选一张后右栏显示预处理 5 连图（原图 / 增强 / 去歪斜 / 裁剪 / 切片）
-  - 下面显示每个切片的 OCR 响应
-  - 顶部有"OCR 全部"按钮，触发整目录跑
-- 蓝图：`/ocr/*`
+- Split image preprocessing from `glm_ocr_ollama.py` into `preprocessing.py`: `enhance_gray`, `deskew`, `crop_foreground`, `split_vertical_with_overlap`.
+- Implement `core.py` with the `OllamaClient` vision endpoint.
+- Use `docker/ocr.Dockerfile`, including opencv.
+- Reuse resume logic such as `should_skip_existing`.
+- Build a standalone UI:
+  - left column lists all PNG pages in `data/pages/<doc_id>/`
+  - selecting a page shows the preprocessing strip: original, enhanced, deskewed, cropped, and tiles
+  - show each tile's OCR response
+  - top-level "OCR all" button triggers the whole directory
+- Treat `data/ocr_text/<doc_id>/pNNN.txt` as a first-class saved artifact. Every downstream module reads it, and the UI should show file status, character count, and link/download.
+- Write an OCR manifest with per-page status so full-document runs can be resumed and audited.
+- Blueprint path: `/ocr/*`.
 
-### 验证
+### Verification
 
 ```bash
-# 先用已拆页的图（Phase 2 产物）
 docker compose run --rm ocr python -m modules.ocr.cli \
   --in_dir /data/pages/myDoc --out_dir /data/ocr_text/myDoc \
   --model glm-ocr:latest
 ```
 
-然后打开 OCR 模块 UI，点任一页看预处理产物是否符合预期，OCR 文本是否看起来对。
+Then open the OCR UI, click a page, and visually inspect preprocessing artifacts and OCR output.
 
-**里程碑 M3**：你能从 PDF 一路跑到 OCR 文本（前三个模块接起来）。
+For large inputs, verify that stopping and restarting OCR skips existing `pNNN.txt` files and does not delete successful OCR text.
+
+Milestone M3: the pipeline can run from PDF to OCR text.
 
 ---
 
-## Phase 4：NER 抽取模块（模块 04/05/06/07）
+## Phase 4: NER Extraction Modules (Modules 04/05/06/07)
 
-这是核心业务逻辑。按照依赖顺序逐个写，每个都带 UI。
+This is the core business logic. Build modules one at a time in dependency order, each with a UI.
 
-### 4.1 模块 04 page_classifier（先做这个）
+### 4.1 Module 04: page_classifier
 
-最简单的 LLM 模块：一个 prompt、一个 JSON、一个决策。
+The simplest LLM module: one prompt, one JSON response, one decision.
 
-- `core.py`：一个 `classify(ocr_text) -> PageDecision`
-- prompt 从 `config/prompts/page_classify.txt` 读
-- **UI**：文本选择器（选一个 `.txt`）→ 左栏显示全文 → 右栏显示 JSON 响应和分类徽章 → 下方显示 evidence 在文本里的高亮位置
+- `core.py`: `classify(ocr_text) -> PageDecision`.
+- Load prompt from `config/prompts/page_classify.txt`.
+- UI: text selector, full OCR text, JSON result, classification badge, and highlighted evidence.
 
-**验证**：对已知是 statement/transport-admin/correspondence 的几个测试页跑一遍，看分类是否对。
+Verification: run known statement, transport/admin, correspondence, index, and bad-OCR pages and check classification.
 
-### 4.2 模块 05 name_extractor
+### 4.2 Module 05: name_extractor
 
-这是流水线里最复杂的模块（四轮 LLM + 规则过滤）。
+This is the most complex module: four LLM stages plus rule filtering.
 
-- 分成四步，每步都是独立函数：`pass1_extract` / `pass2_recall` / `filter_candidates` / `verify_final`
-- 每步独立可测、独立有 UI
-- 最后的规则过滤 `keep_subject_name`（正负 pattern）放 `core.py`
-- **UI**：
-  - 顶部文本选择器
-  - 四个并列 panel，显示四轮输出（相同格式：高亮的人名 + evidence）
-  - 最下面一个 panel 显示"最终输出"，被剔除的候选显示灰色删除线 + tooltip 说明原因（"匹配到 ROLE_NEGATIVE_PATTERNS"、"不在候选集里" 等）
+- Functions: `pass1_extract`, `pass2_recall`, `filter_candidates`, `verify_final`.
+- Every stage should be separately testable and visible in the UI.
+- Final rule filter `keep_subject_name` lives in `core.py`.
+- UI:
+  - text selector at the top
+  - four panels for pass1, recall, filter, and verify
+  - final output panel
+  - removed candidates shown with reasons such as matched negative role pattern or not in subject group
 
-### 4.3 模块 06 metadata_extractor
+### 4.3 Module 06: metadata_extractor
 
-- 输入 `(ocr_text, name, page, report_type)` → 输出一个 detail 行
-- 单次 LLM 调用，schema 固定
-- **UI**：
-  - 选页面 + 选名字
-  - 展示 5 个字段卡片（crime_type / whether_abuse / conflict_type / trial / amount_paid）
-  - 每个字段旁挂 evidence 片段，evidence 文字点击后原文对应位置高亮滚动到
+- Input `(ocr_text, name, page, report_type)` -> one detail row.
+- Single LLM call with a fixed schema.
+- UI:
+  - select page and person
+  - show five field cards: crime_type, whether_abuse, conflict_type, trial, amount_paid
+  - show field-level evidence and link it to the original text
 
-### 4.4 模块 07 place_extractor
+### 4.4 Module 07: place_extractor
 
-- 三轮 LLM（candidate / recall / verify）+ 日期 enrich + 规则 reconcile
-- 比 name_extractor 还重，但结构类似
-- **UI**：
-  - 选页面 + 选名字
-  - 显示地点路径的**有序卡片链**（order 1 → 2 → 3 ...），order=0 的放旁边
-  - 每个地点显示 evidence、日期、置信度（explicit/derived_from_doc 用不同颜色徽章）
-  - 能切换查看各轮候选
+- Three LLM rounds: candidate, recall/verify, and final verification, plus date enrichment and rule reconciliation.
+- Similar complexity to `name_extractor`.
+- UI:
+  - select page and person
+  - show ordered route cards, with order 1 -> 2 -> 3 and `order=0` separated as background
+  - show evidence, date, and confidence for each place
+  - allow switching between candidate, verified, and reconciled stages
 
-### 验证（Phase 4 整体）
+### Verification for Phase 4
 
-每个模块单独在其 UI 上跑过 3-5 个测试页，输出合理。最后串起来：
+Each module should be run through its UI on 3 to 5 test pages with reasonable outputs. Finally, chain modules 04 through 07 for one document with CLI:
 
 ```bash
-# 用 CLI 串 04/05/06/07 跑一个 doc
 docker compose run --rm classifier python -m modules.page_classifier.cli ...
 docker compose run --rm names python -m modules.name_extractor.cli ...
-# 等等
+# and so on
 ```
 
-**里程碑 M4**：整条流水线所有业务模块都各自能跑能看。
+Milestone M4: all business modules can each run and be inspected.
 
 ---
 
-## Phase 5：编排层（模块 10 orchestrator）
+## Phase 5: Orchestration Layer (Module 10)
 
-到这步所有"干活"的模块都有了，现在把它们串起来。
+At this point, every module that does real work exists. Now connect them.
 
-### 要做的事
+### Tasks
 
-- `pipeline.py`：`run_document(doc_id)` 函数，顺序调用各模块（文件系统传数据）
-- `job_store.py`：简单的作业状态管理（不用数据库，JSON 文件就够）
-- **per-page 粒度**的进度跟踪
-- 幂等：每个模块产物都有，跳过重跑
-- Blueprint：`/orchestrate/*`
-  - `POST /orchestrate/run`：启动一个 job
-  - `GET /orchestrate/status/<job_id>`：当前状态
-  - `GET /orchestrate/stream/<job_id>`：SSE 事件流（实时日志）
-- **Dashboard UI**：
-  - 每页一行
-  - 每行 6 个状态灯（ingest / ocr / classify / names / meta+places / aggregate）
-  - 点状态灯能跳到对应模块 UI 看该页详情
-  - 右下角实时 tail 日志
+- `pipeline.py`: `run_document(doc_id)` calls modules in order through the file-system contract.
+- `job_store.py`: simple job state management with JSON files; no database needed.
+- Per-page progress tracking.
+- Idempotency: if a module artifact already exists, skip the rerun.
+- Blueprint `/orchestrate/*`:
+  - `POST /orchestrate/run`: start a job
+  - `GET /orchestrate/status/<job_id>`: current status
+  - `GET /orchestrate/stream/<job_id>`: SSE stream with live logs
+- Dashboard UI:
+  - one row per page
+  - six status cells per row: ingest, ocr, classify, names, meta+places, aggregate
+  - clicking a status cell opens the corresponding module UI for that page
+  - live log tail in the lower-right area
 
-### 验证
+### Verification
 
-上传真实 PDF，一键运行，全程盯着 dashboard 看，每个状态灯按顺序变绿。最终 CSV 写出。
+Upload a real PDF, run it end to end, and watch the dashboard. Each status cell should turn done in order, and final CSV files should be written.
 
-**里程碑 M5**：端到端完成。此时可以宣布功能可用。
+Milestone M5: end-to-end execution works.
 
 ---
 
-## Phase 6：主 Web App（模块 11）
+## Phase 6: Main Web App (Module 11)
 
-把所有东西包进一个用户面向的 Flask 主程序。
+Wrap everything into a user-facing Flask application.
 
-### 要做的事
+### Tasks
 
-- `create_app()` factory：挂所有 blueprint，注册错误处理、日志
-- 共享的 `base.html`：顶部导航栏链接所有模块
-- Dashboard 页（继承 orchestrator dashboard）作为首页
-- 文件上传页（调 pdf_ingest 的 API）
-- 作业列表页：列出 `data/output/` 下所有已完成的 doc
-- 结果下载页：每个 doc 的 3 份 CSV 直接下载
-- **生产容器**：gunicorn 多 worker，只绑 `127.0.0.1:5000`
-- 简单的本地访问控制（可选）：检查请求来自 `127.0.0.1`，否则 403
+- `create_app()` factory: mount all blueprints, register error handlers and logging.
+- Shared `base.html`: top navigation linking all modules.
+- Dashboard page as the home page, inherited from orchestrator.
+- File upload page that calls the `pdf_ingest` API.
+- Input registration page that lists local PDFs in `data/input_pdfs/` and starts jobs without uploading them through Flask.
+- Job list page listing completed docs under `data/output/`.
+- Results download page for the three CSVs for each doc.
+- Production container: gunicorn with multiple workers, bound only to `127.0.0.1:5000`.
+- Optional local access control: reject requests not coming from local/private Docker addresses.
 
-### 验证
+### Verification
 
 ```bash
-docker compose up -d      # 所有服务起来
-# 浏览器打开 http://127.0.0.1:5000
-# 从陌生机器 ping 不到 5000
+docker compose up -d
+# Open http://127.0.0.1:5000
+# Confirm another machine cannot reach port 5000
 ```
 
-**里程碑 M6**：一个打磨过的、可交付的系统。
+Milestone M6: a polished, deliverable system.
 
 ---
 
-## Phase 7：打磨（可选）
+## Test Data Tiers
 
-这些是锦上添花，视时间做。
+Use three levels of tests so development remains fast while still covering the real input shape:
 
-- **性能**：OCR 并发（同时处理 N 张图）、LLM 批处理
-- **恢复性**：跑到一半 kill，再启动能从断点续跑
-- **审计日志**：每次 LLM 调用记录 prompt+response 到 jsonl
-- **导出格式**：除了 CSV，加 JSON Lines、Parquet
-- **对比工具**：新旧 CSV 对比 UI，validator 模块
-- **回归测试**：把原脚本对某批测试数据的输出 freeze 下来作 golden，重构版必须匹配
+| Tier | Source | Purpose | When to Run |
+|---|---|---|---|
+| Tiny fixture | Generated 1-2 page PDFs in test fixtures | Unit and CI tests | Every commit |
+| Sample input | Local `sample input 1.pdf` / `sample input 2.pdf` | Real scan shape, quick smoke checks | During module work |
+| Full input | Local `full input.pdf` or a production-sized PDF over 500 MB | Disk, resume, dashboard, and long-run behavior | Manual milestone tests |
 
----
-
-## 汇总构建顺序（一行表）
-
-```
-M0: 骨架   → M1: Ollama   → M2: 3 个非 LLM 模块   → M3: OCR
-  → M4: 4 个 NER 模块   → M5: 编排器   → M6: 主 Web App   → M7: 打磨
-```
-
-把项目切成 7 段，每段有明确的可 demo 成果，推进时心里就不慌。
+Sample and full PDFs are local data and must not be committed to git. `.gitignore` excludes `*.pdf`, `data/`, and `volumes/`.
 
 ---
 
-## 每阶段的验收清单（给自己 checklist）
+## Phase 7: Polish (Optional)
+
+These are useful additions if time allows:
+
+- **Performance**: concurrent OCR, processing N images at a time, or LLM batching.
+- **Recoverability**: kill the run halfway and verify restart resumes from the breakpoint.
+- **Audit logs**: record every LLM prompt and response to JSONL.
+- **Export formats**: add JSON Lines and Parquet in addition to CSV.
+- **Comparison tools**: UI for comparing old and new CSVs, plus validator module.
+- **Regression tests**: freeze outputs from the original scripts on a test dataset as golden files and require the refactor to match.
+
+---
+
+## Build Order Summary
+
+```text
+M0: skeleton
+  -> M1: Ollama
+  -> M2: three non-LLM modules
+  -> M3: OCR
+  -> M4: four NER modules
+  -> M5: orchestrator
+  -> M6: main Web App
+  -> M7: polish
+```
+
+The project is split into seven phases, each with a clear demoable result. This keeps progress calm and observable.
+
+---
+
+## Acceptance Checklist by Phase
 
 ### M1 Ollama
-- [ ] `docker compose up -d ollama` 成功
-- [ ] `curl http://127.0.0.1:11434/api/tags` **失败**
-- [ ] 内部 curl 能通
-- [ ] 至少有一个模型已 pulled
 
-### M2 非 LLM 模块
-- [ ] pdf_ingest UI 能上传 PDF 看到缩略图
-- [ ] normalizer UI 能实时演示规则
-- [ ] aggregator UI 能展示/下载假数据合成的 CSV
-- [ ] 三个模块各自 `docker compose run --rm <service> ...` 跑通
+- [ ] `docker compose up -d ollama` succeeds.
+- [ ] `curl http://127.0.0.1:11434/api/tags` fails.
+- [ ] Internal curl works.
+- [ ] At least one model has been pulled.
+
+### M2 Non-LLM Modules
+
+- [ ] `pdf_ingest` UI can upload a PDF and show thumbnails.
+- [ ] `pdf_ingest` can register an existing local PDF from `data/input_pdfs/`.
+- [ ] Partial large-PDF ingest can resume from the manifest without rerendering completed pages.
+- [ ] `normalizer` UI can demonstrate rules in real time.
+- [ ] `aggregator` UI can show and download CSVs generated from fake data.
+- [ ] All three modules run through `docker compose run --rm <service> ...`.
 
 ### M3 OCR
-- [ ] OCR UI 能对选中页面看 5 连预处理图
-- [ ] 整目录 OCR 跑通、产物写入 `data/ocr_text/`
-- [ ] 断点续跑生效
 
-### M4 NER 四模块
-- [ ] 每个模块都有自己的 UI，能对选中页面看结果
-- [ ] 测试页 5 个以上，人工验证结果合理
-- [ ] 各模块 CLI 能单独跑
+- [ ] OCR UI shows the five-step preprocessing strip for a selected page.
+- [ ] Whole-folder OCR runs and writes to `data/ocr_text/`.
+- [ ] OCR text files are visible in the UI and reused by downstream modules.
+- [ ] Resume behavior works.
 
-### M5 编排
-- [ ] Dashboard 上传 PDF 能端到端跑完
-- [ ] 每页 6 个状态灯按序亮绿
-- [ ] 中途 kill 再启动能续跑
+### M4 Four NER Modules
 
-### M6 主 Web App
-- [ ] 首页即 Dashboard
-- [ ] LAN 访问失败、127.0.0.1 访问成功
-- [ ] 能下载 3 份 CSV
-- [ ] gunicorn 跑在多 worker 上
+- [ ] Each module has its own UI and can show results for a selected page.
+- [ ] At least five test pages are manually reviewed with reasonable outputs.
+- [ ] Each module's CLI runs independently.
 
----
+### M5 Orchestration
 
-## 常见陷阱预警
+- [ ] Dashboard can upload a PDF and run end to end.
+- [ ] Each page's six status cells turn done in order.
+- [ ] Killing and restarting midway resumes the run.
 
-1. **不要在 Phase 1 之前写业务代码**。基础打不牢后面一直返工。
-2. **OCR 的 prompt 不稳定**。vision 模型有时返回 markdown fence 或附加说明，原代码有 `cleanup_ocr_text` 专门处理，别忘了保留。
-3. **LLM 返回的 JSON 常缺字段或多字段**。`OllamaClient.generate_json` 的"坏 → 修复 prompt"兜底一定要保留。
-4. **路径在容器里都是 `/data/...`**。别把主机路径硬编码进 Python。全走 `shared/config.py`。
-5. **Windows 行尾**。原项目的 `compose.yaml` 是 `\r\n`，迁移时统一 LF，别让 docker-compose 报怪异错误。
-6. **非 root + 写文件**：容器里的 uid 10001 要对 `data/` 下目录有写权限。`docker compose` 启动前要 `chown -R 10001:10001 data/`（或起个 init 容器帮忙）。
-7. **`internal: true` 网络没有 DNS 查外网**。这意味着 `pip install` 阶段必须在 base 镜像里完成，运行时不能再下载。
+### M6 Main Web App
+
+- [ ] Home page is the dashboard.
+- [ ] `/inputs` can register large PDFs without browser upload.
+- [ ] LAN access fails and `127.0.0.1` access succeeds.
+- [ ] All three CSV files can be downloaded.
+- [ ] gunicorn runs with multiple workers.
 
 ---
 
-接下来去看每个模块自己的设计文档：`docs/modules/*.md`。
+## Common Pitfalls
+
+1. **Do not write business logic before Phase 1**. A weak foundation causes continuous rework.
+2. **OCR prompts are unstable**. Vision models may return markdown fences or extra explanations. Preserve the original `cleanup_ocr_text` handling.
+3. **LLM JSON often has missing or extra fields**. Preserve the `OllamaClient.generate_json` fallback that repairs bad JSON with a repair prompt.
+4. **Paths inside containers are always `/data/...`**. Do not hard-code host paths in Python; use `shared/config.py`.
+5. **Windows line endings**. If the original `compose.yaml` uses `\r\n`, normalize to LF during migration to avoid strange docker-compose errors.
+6. **Non-root users and file writes**. Container uid `10001` must be able to write under `data/`. Before starting Compose, run `chown -R 10001:10001 data/` or use an init container.
+7. **`internal: true` networks cannot resolve external DNS**. This means `pip install` must happen during image build; runtime containers cannot download packages.
+
+---
+
+Next, read the detailed design document for each module in `docs/*.md`.

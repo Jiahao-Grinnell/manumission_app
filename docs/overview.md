@@ -1,356 +1,298 @@
-# Overview — PDF-OCR-NER 抽取流水线（重构版）
+# Overview - PDF-OCR-NER Extraction Pipeline (Refactor)
 
-## 1. 项目目的
+## 1. Project Purpose
 
-这是一个针对**历史奴隶 / 解放档案文献**的端到端抽取系统。给一份扫描版 PDF 文档，系统要做的事：
+This is an end-to-end extraction system for **historical slavery and manumission archival documents**. Given a scanned PDF, the system should:
 
-1. 把 PDF 拆成每页一张图像
-2. 对每页图像做 OCR，得到文字
-3. 对每页文字用 LLM 抽取：
-   - 这页要不要抽（是否索引页/烂 OCR 页）、报告类型是什么
-   - 这页涉及到的**被奴役/解放主体人名**
-   - 每个人的**案件元数据**（罪名类型、是否受虐、冲突类型、审理结果、付款金额）
-   - 每个人的**地点路径**（出生地、被掳处、到达地、转运地，附带时间）
-4. 规范化、去重、验证
-5. 写入最终 CSV（`Detailed info.csv`、`name place.csv`、`run_status.csv`）
+1. Split the PDF into one image per page.
+2. Run OCR on each page image to obtain text.
+3. Use LLMs to extract from each page:
+   - whether the page should be extracted, whether it is an index or bad-OCR page, and the report type
+   - the **names of enslaved or manumitted subjects** mentioned on the page
+   - each person's **case metadata**, including crime type, abuse, conflict type, trial outcome, and amount paid
+   - each person's **place path**, including birthplace, place of capture, arrival place, transit places, and related dates
+4. Normalize, deduplicate, and validate the extracted data.
+5. Write final CSV files: `Detailed info.csv`, `name place.csv`, and `run_status.csv`.
 
-原系统是两个单体 Python 脚本 + docker-compose。重构目标是把它拆成**模块化 Flask 应用**，每块都能独立跑、独立测试、可视化展示。
+The original system consisted of two monolithic Python scripts plus Docker Compose. The refactor splits it into a **modular Flask application** where each module can run independently, be tested independently, and expose a visual test UI.
 
 ---
 
-## 2. 核心设计目标
+## 1.1 Input Reality and Scale
 
-| 目标 | 具体含义 |
+The repository includes local sample PDFs that show the expected input shape:
+
+- `sample input 1.pdf`: small sample, about 18 MB
+- `sample input 2.pdf`: small sample, about 12 MB
+- `full input.pdf`: fuller sample, about 303 MB
+
+Real production PDFs can be **larger than 500 MB**. The design must therefore treat large PDFs as normal, not exceptional:
+
+- The Web UI may support browser upload, but it must also support registering a file already placed in `data/input_pdfs/`. For very large files, folder-based registration is safer than pushing the entire PDF through a Flask request.
+- Upload limits must be configurable and must not be hard-coded to 500 MB.
+- Ingest must render pages one at a time and never load the whole PDF into memory as images.
+- Every expensive stage must persist intermediate artifacts immediately so a crash or restart does not lose work.
+- Tests must include small samples for quick feedback and at least one full-size smoke run that validates resume behavior, disk usage, and dashboard performance.
+
+---
+
+## 2. Core Design Goals
+
+| Goal | Meaning |
 |---|---|
-| **模块化** | 每个阶段是独立模块，有自己的目录、Dockerfile、测试、UI |
-| **可独立运行** | 每个模块能单独启动一个容器，独立完成它那一段工作 |
-| **可自由组合** | 模块之间约定通过文件系统 + HTTP 交换数据，不硬依赖 |
-| **可视化测试** | 每个模块都带一个 Flask 页面，能直观看见输入、中间产物、输出 |
-| **网络隔离** | Ollama 完全不对外；Web UI 只绑 `127.0.0.1`，不走 LAN |
-| **离线可用** | Runtime 阶段所有容器都在 `internal: true` 网络，零外网 |
-| **可恢复** | 每个模块幂等，中断后重跑能跳过已完成 |
+| **Modularity** | Every stage is an independent module with its own directory, Dockerfile, tests, and UI. |
+| **Independent execution** | Each module can start as its own container and complete its own stage of work. |
+| **Flexible composition** | Modules exchange data through a file-system contract plus HTTP; they are not hard-coupled. |
+| **Visual testing** | Every module exposes a Flask page showing inputs, intermediate artifacts, and outputs. |
+| **Network isolation** | Ollama is never exposed externally; the Web UI binds only to `127.0.0.1`, not LAN. |
+| **Offline runtime** | All runtime containers sit on an `internal: true` network with no internet access. |
+| **Recoverability** | Modules are idempotent; after interruption, reruns skip completed artifacts. |
+| **Artifact-first processing** | Important intermediate outputs, especially OCR text and per-page JSON, are written to disk and surfaced in the UI. |
 
 ---
 
-## 3. 顶层架构
+## 3. Top-Level Architecture
 
-### 3.1 数据流视图
+### 3.1 Data Flow
 
-```
- ┌────────────┐
- │  PDF file  │  ← 用户上传到 data/input_pdfs/
- └─────┬──────┘
-       ▼
-┌──────────────────┐  拆页 + 基础元数据
-│  02 pdf_ingest   │  → data/pages/<doc_id>/p001.png ...
-└─────────┬────────┘
-          ▼
-┌──────────────────┐  视觉模型 OCR（调 Ollama）
-│     03 ocr       │  → data/ocr_text/<doc_id>/p001.txt ...
-└─────────┬────────┘
-          ▼
-┌──────────────────┐  分类：extract? report_type?
-│04 page_classifier│  → data/intermediate/<doc_id>/p001.classify.json
-└─────────┬────────┘
-          ▼
-┌──────────────────┐  多轮抽取命名主体
-│05 name_extractor │  → data/intermediate/<doc_id>/p001.names.json
-└─────────┬────────┘
-          ├──────────────────────────┐
-          ▼                          ▼
-┌──────────────────┐     ┌──────────────────┐
-│06 meta_extractor │     │07 place_extractor│
-└─────────┬────────┘     └─────────┬────────┘
-          │                        │
-          ▼                        ▼
-┌──────────────────────────────────────────┐
-│           08 normalizer                  │  (库 + UI)
-│  名字/地名/日期规范化、去重、验证           │
-└─────────┬────────────────────────────────┘
-          ▼
-┌──────────────────────────────────────────┐
-│           09 aggregator                  │
-│  合并所有页，写三份最终 CSV               │
-└─────────┬────────────────────────────────┘
-          ▼
-      data/output/
-      ├── Detailed info.csv
-      ├── name place.csv
-      └── run_status.csv
+```text
+PDF file
+  -> 02 pdf_ingest
+     data/pages/<doc_id>/p001.png ...
+  -> 03 ocr
+     data/ocr_text/<doc_id>/p001.txt ...
+  -> 04 page_classifier
+     data/intermediate/<doc_id>/p001.classify.json
+  -> 05 name_extractor
+     data/intermediate/<doc_id>/p001.names.json
+  -> 06 metadata_extractor
+     data/intermediate/<doc_id>/p001.meta.json
+  -> 07 place_extractor
+     data/intermediate/<doc_id>/p001.places.json
+  -> 08 normalizer
+     name / place / date normalization, deduplication, validation
+  -> 09 aggregator
+     data/output/<doc_id>/
+       Detailed info.csv
+       name place.csv
+       run_status.csv
 ```
 
-旁路支持服务：
+Supporting services:
 
-```
-┌──────────────────────┐      ┌────────────────────────┐
-│ 01 ollama_gateway    │◄─────┤ 所有需要 LLM 的模块       │
-│ (Ollama 容器 + 客户端) │  HTTP │ (03/04/05/06/07)       │
-└──────────────────────┘      └────────────────────────┘
+```text
+01 ollama_gateway
+  Ollama container + client contract
+  Called by modules 03, 04, 05, 06, and 07 over HTTP.
 
-┌──────────────────────┐
-│ 10 orchestrator      │  调度整个流水线，跟踪每页进度
-└──────────────────────┘
+10 orchestrator
+  Schedules the whole pipeline and tracks per-page progress.
 
-┌──────────────────────┐
-│ 11 web_app           │  Flask 主程序，把所有模块的 blueprint
-│ (127.0.0.1 only)     │  挂在一起；也是总控台和 dashboard
-└──────────────────────┘
+11 web_app
+  Main Flask application on 127.0.0.1 only.
+  Mounts all module blueprints and provides the main dashboard.
 
-┌──────────────────────┐
-│ 00 shared (库)        │  OllamaClient、schemas、config、IO
-└──────────────────────┘
+00 shared
+  Shared Python library with OllamaClient, schemas, config, paths, storage, and I/O helpers.
 ```
 
-### 3.2 模块清单
+### 3.2 Module List
 
-| # | 模块 | 性质 | 有独立容器? | 有 Web UI? |
-|---|------|------|------------|-----------|
-| 00 | `shared` | Python 库，不是服务 | 否 | 否 |
-| 01 | `ollama_gateway` | 基础设施 + 客户端封装 | 是（Ollama 自己） | 否 |
-| 02 | `pdf_ingest` | 处理模块 | 是（可选） | 是 |
-| 03 | `ocr` | 处理模块 | 是（可选） | 是 |
-| 04 | `page_classifier` | 处理模块 | 是（可选） | 是 |
-| 05 | `name_extractor` | 处理模块 | 是（可选） | 是 |
-| 06 | `metadata_extractor` | 处理模块 | 是（可选） | 是 |
-| 07 | `place_extractor` | 处理模块 | 是（可选） | 是 |
-| 08 | `normalizer` | 库 + UI（纯 Python） | 否 | 是 |
-| 09 | `aggregator` | 处理模块 | 是（可选） | 是 |
-| 10 | `orchestrator` | 调度器 | 是 | 是 |
-| 11 | `web_app` | Flask 主入口 | 是（唯一对本机暴露） | 是 |
+| # | Module | Type | Independent Container? | Web UI? |
+|---|---|---|---|---|
+| 00 | `shared` | Python library, not a service | No | No |
+| 01 | `ollama_gateway` | Infrastructure + client contract | Yes, Ollama itself | No |
+| 02 | `pdf_ingest` | Processing module | Yes, optional | Yes |
+| 03 | `ocr` | Processing module | Yes, optional | Yes |
+| 04 | `page_classifier` | Processing module | Yes, optional | Yes |
+| 05 | `name_extractor` | Processing module | Yes, optional | Yes |
+| 06 | `metadata_extractor` | Processing module | Yes, optional | Yes |
+| 07 | `place_extractor` | Processing module | Yes, optional | Yes |
+| 08 | `normalizer` | Library + UI, pure Python | No | Yes |
+| 09 | `aggregator` | Processing module | Yes, optional | Yes |
+| 10 | `orchestrator` | Scheduler | Yes | Yes |
+| 11 | `web_app` | Main Flask entry point | Yes, the only host-exposed service | Yes |
 
-### 3.3 模块间的契约
+### 3.3 Inter-Module Contracts
 
-所有模块遵守**同一种约定**：
+All modules follow the same conventions:
 
-1. **通过文件系统交换数据**（主契约）：每个模块读某个目录，写某个目录，格式固定。这是默认集成方式。
-2. **暴露 HTTP 蓝图**（辅助契约）：每个处理模块都实现一组 REST 端点，orchestrator 通过 HTTP 触发、查进度。这是可视化和分步调试用的。
-3. **CLI 入口**（辅助契约）：每个模块可以 `python -m modules.<name> ...` 单跑，支持原有命令行参数。这是脱离 Flask 调试用的。
+1. **File-system data exchange** as the primary contract. Each module reads fixed directories and writes fixed directories with fixed formats. This is the default integration mode.
+2. **HTTP blueprints** as a secondary contract. Each processing module implements REST endpoints that the orchestrator can trigger and monitor. This supports visualization and step-by-step debugging.
+3. **CLI entry points** as a secondary contract. Each module can run as `python -m modules.<name> ...` with original-style command-line arguments. This supports debugging without Flask.
 
-换句话说：你想脱离 Web 跑全链路，可以。你想只跑 OCR 模块，可以。你想用主 Web UI 串起来跑，也可以。三种用法走的是同一套核心代码。
+In other words: you can run the whole chain without the Web UI, run only OCR, or run the full workflow from the main Web UI. All three modes use the same core code.
 
 ---
 
-## 4. 完整文件结构
+## 4. Complete File Structure
 
 ```text
 llm-pipeline/
-│
-├── README.md
-├── .env.example
-├── .dockerignore
-├── .gitignore
-│
-├── compose.seed.yaml              # 在线下载 Ollama 模型（一次性）
-├── compose.yaml                   # 运行时（离线，完整 stack）
-├── compose.dev.yaml               # 开发用 overlay（热重载、挂源码）
-│
-├── docs/                          # ← 你正在看的这些文档
-│   ├── overview.md
-│   ├── process.md
-│   └── modules/
-│       ├── 00_shared.md
-│       ├── 01_ollama_gateway.md
-│       ├── 02_pdf_ingest.md
-│       ├── 03_ocr.md
-│       ├── 04_page_classifier.md
-│       ├── 05_name_extractor.md
-│       ├── 06_metadata_extractor.md
-│       ├── 07_place_extractor.md
-│       ├── 08_normalizer.md
-│       ├── 09_aggregator.md
-│       ├── 10_orchestrator.md
-│       └── 11_web_app.md
-│
-├── docker/                        # 所有 Dockerfile
-│   ├── base.Dockerfile            # 共享的基础镜像层
-│   ├── ocr.Dockerfile             # 需要 opencv
-│   ├── ner.Dockerfile             # 轻量，只要 requests
-│   ├── ingest.Dockerfile          # 需要 pymupdf/pdf2image
-│   └── web.Dockerfile             # Flask + gunicorn
-│
-├── requirements/
-│   ├── base.txt                   # requests, flask, pydantic
-│   ├── ocr.txt                    # opencv-python-headless, numpy
-│   ├── ingest.txt                 # pymupdf
-│   ├── ner.txt                    # 继承 base
-│   └── web.txt                    # flask, jinja2, gunicorn
-│
-├── config/
-│   ├── prompts/                   # 所有 prompt 模板抽成独立文件
-│   │   ├── page_classify.txt
-│   │   ├── name_pass.txt
-│   │   ├── name_recall.txt
-│   │   ├── name_filter.txt
-│   │   ├── name_verify.txt
-│   │   ├── meta_pass.txt
-│   │   ├── place_pass.txt
-│   │   ├── place_recall.txt
-│   │   ├── place_verify.txt
-│   │   ├── place_date_enrich.txt
-│   │   ├── json_repair.txt
-│   │   └── ocr.txt
-│   ├── schemas/                   # CSV 列定义、枚举值定义
-│   │   ├── detail.yaml
-│   │   ├── place.yaml
-│   │   ├── status.yaml
-│   │   └── vocab.yaml             # CRIME_TYPES, CONFLICT_TYPES, PLACE_MAP ...
-│   └── approved_model_tags.json
-│
-├── src/
-│   ├── shared/                    # 00 共享库（无 Flask 依赖）
-│   │   ├── __init__.py
-│   │   ├── ollama_client.py
-│   │   ├── schemas.py             # dataclass / pydantic
-│   │   ├── text_utils.py
-│   │   ├── storage.py             # 路径约定、原子写
-│   │   ├── config.py              # 环境变量、默认值
-│   │   └── logging_setup.py
-│   │
-│   ├── modules/
-│   │   ├── pdf_ingest/            # 02
-│   │   │   ├── __init__.py
-│   │   │   ├── core.py
-│   │   │   ├── blueprint.py
-│   │   │   ├── standalone.py
-│   │   │   ├── cli.py
-│   │   │   ├── templates/ui.html
-│   │   │   └── tests/
-│   │   │
-│   │   ├── ocr/                   # 03
-│   │   │   ├── core.py            # 含原 glm_ocr_ollama.py 的图像处理
-│   │   │   ├── preprocessing.py   # enhance_gray / deskew / crop / tile
-│   │   │   ├── blueprint.py
-│   │   │   ├── standalone.py
-│   │   │   ├── cli.py
-│   │   │   ├── templates/ui.html
-│   │   │   └── tests/
-│   │   │
-│   │   ├── page_classifier/       # 04
-│   │   │   └── ...
-│   │   ├── name_extractor/        # 05
-│   │   │   └── ...
-│   │   ├── metadata_extractor/    # 06
-│   │   │   └── ...
-│   │   ├── place_extractor/       # 07
-│   │   │   └── ...
-│   │   ├── normalizer/            # 08
-│   │   │   ├── names.py
-│   │   │   ├── places.py
-│   │   │   ├── dates.py
-│   │   │   ├── blueprint.py
-│   │   │   ├── templates/ui.html
-│   │   │   └── tests/
-│   │   └── aggregator/            # 09
-│   │       └── ...
-│   │
-│   ├── orchestrator/              # 10
-│   │   ├── pipeline.py
-│   │   ├── job_store.py
-│   │   ├── blueprint.py
-│   │   ├── templates/
-│   │   └── tests/
-│   │
-│   └── web_app/                   # 11 Flask 主程序
-│       ├── __init__.py
-│       ├── app.py                 # create_app() factory
-│       ├── register.py            # 把所有 blueprint 挂上去
-│       ├── auth.py                # 可选：本地鉴权中间件
-│       ├── templates/
-│       │   ├── base.html
-│       │   └── dashboard.html
-│       ├── static/
-│       │   ├── pico.css
-│       │   └── app.js
-│       └── wsgi.py                # gunicorn 入口
-│
-├── data/                          # 所有运行时数据
-│   ├── input_pdfs/                # ← 用户放 PDF 的地方
-│   ├── pages/<doc_id>/            # 拆页后的 PNG
-│   ├── ocr_text/<doc_id>/         # OCR 输出 .txt
-│   ├── intermediate/<doc_id>/     # 各模块的中间 JSON
-│   ├── output/<doc_id>/           # 最终三份 CSV
-│   └── logs/<doc_id>/             # 运行日志
-│
-├── volumes/
-│   └── ollama/                    # Ollama 模型持久化
-│
-└── scripts/
-    ├── seed_model.sh              # 一键拉模型
-    ├── run_pipeline.sh            # 一键跑完整 PDF
-    └── dev_up.sh                  # 开发模式启动
+|-- README.md
+|-- .env.example
+|-- .dockerignore
+|-- .gitignore
+|
+|-- compose.seed.yaml              # One-time online Ollama model download
+|-- compose.yaml                   # Offline runtime full stack
+|-- compose.dev.yaml               # Development overlay with reload and source mounts
+|
+|-- docs/
+|   |-- overview.md
+|   |-- process.md
+|   |-- 00_shared.md
+|   |-- 01_ollama_gateway.md
+|   |-- 02_pdf_ingest.md
+|   |-- 03_ocr.md
+|   |-- 04_page_classifier.md
+|   |-- 05_name_extractor.md
+|   |-- 06_metadata_extractor.md
+|   |-- 07_place_extractor.md
+|   |-- 08_normalizer.md
+|   |-- 09_aggregator.md
+|   |-- 10_orchestrator.md
+|   `-- 11_web_app.md
+|
+|-- docker/                        # All Dockerfiles
+|   |-- base.Dockerfile            # Shared base image
+|   |-- ocr.Dockerfile             # Needs opencv
+|   |-- ner.Dockerfile             # Lightweight, mostly requests
+|   |-- ingest.Dockerfile          # Needs pymupdf/pdf2image
+|   `-- web.Dockerfile             # Flask + gunicorn
+|
+|-- requirements/
+|   |-- base.txt                   # requests, flask, pydantic
+|   |-- ocr.txt                    # opencv-python-headless, numpy
+|   |-- ingest.txt                 # pymupdf
+|   |-- ner.txt                    # inherits base
+|   `-- web.txt                    # flask, jinja2, gunicorn
+|
+|-- config/
+|   |-- prompts/                   # Prompt templates as standalone files
+|   |   |-- page_classify.txt
+|   |   |-- name_pass.txt
+|   |   |-- name_recall.txt
+|   |   |-- name_filter.txt
+|   |   |-- name_verify.txt
+|   |   |-- meta_pass.txt
+|   |   |-- place_pass.txt
+|   |   |-- place_recall.txt
+|   |   |-- place_verify.txt
+|   |   |-- place_date_enrich.txt
+|   |   |-- json_repair.txt
+|   |   `-- ocr.txt
+|   |-- schemas/                   # CSV column definitions and vocabulary
+|   |   |-- detail.yaml
+|   |   |-- place.yaml
+|   |   |-- status.yaml
+|   |   `-- vocab.yaml             # CRIME_TYPES, CONFLICT_TYPES, PLACE_MAP ...
+|   `-- approved_model_tags.json
+|
+|-- src/
+|   |-- shared/                    # 00 shared library, no Flask dependency
+|   |-- modules/
+|   |   |-- pdf_ingest/            # 02
+|   |   |-- ocr/                   # 03
+|   |   |-- page_classifier/       # 04
+|   |   |-- name_extractor/        # 05
+|   |   |-- metadata_extractor/    # 06
+|   |   |-- place_extractor/       # 07
+|   |   |-- normalizer/            # 08
+|   |   `-- aggregator/            # 09
+|   |-- orchestrator/              # 10
+|   `-- web_app/                   # 11 Flask main app
+|
+|-- data/                          # All runtime data
+|   |-- input_pdfs/                # User-provided PDFs, ignored by git
+|   |-- pages/<doc_id>/            # Split PNG pages from pdf_ingest
+|   |-- ocr_text/<doc_id>/         # Persisted OCR .txt outputs, one file per page
+|   |-- intermediate/<doc_id>/     # Persisted per-page JSON from classifier, names, meta, places
+|   |-- output/<doc_id>/           # Final CSV files
+|   |-- logs/<doc_id>/             # Runtime logs and job state
+|   `-- audit/<doc_id>/            # Optional prompt/response JSONL audit trail
+|
+|-- volumes/
+|   `-- ollama/                    # Persistent Ollama models
+|
+`-- scripts/
+    |-- seed_model.sh              # Pull a model
+    |-- run_pipeline.sh            # Run a complete PDF
+    `-- dev_up.sh                  # Start development mode
 ```
 
 ---
 
-## 5. 技术栈
+## 5. Technology Stack
 
-| 层 | 选型 | 为什么 |
+| Layer | Choice | Reason |
 |---|---|---|
-| Python | 3.11 | 稳定、符合原代码 |
-| Web | Flask + Jinja2 | 你指定要 Flask；Jinja 够用，不引入前端框架复杂度 |
-| 前端 | 无 SPA，用 Pico.css + vanilla JS | 简单、快、够可视化 |
-| PDF 拆页 | PyMuPDF (`fitz`) | 纯 Python 轮子、不依赖外部可执行、快 |
-| 图像 | opencv-python-headless | 原代码已在用 |
-| LLM | Ollama（qwen2.5 / mistral-small3.1 / glm-ocr）| 继承原架构 |
-| 容器 | Docker Compose v2 | 继承原架构 |
-| 部署 | Compose profiles | 每个模块可独立拉起 |
-| WSGI | gunicorn | Flask 生产用标准 |
+| Python | 3.11 | Stable and compatible with the original code |
+| Web | Flask + Jinja2 | Flask was requested; Jinja is enough without adding frontend framework complexity |
+| Frontend | No SPA; Pico.css + vanilla JS | Simple, fast, and enough for visualization |
+| PDF splitting | PyMuPDF (`fitz`) | Pure Python wheel, fast, no external executable |
+| Images | opencv-python-headless | Already used by the original code |
+| LLM | Ollama (`qwen2.5` / `mistral-small3.1` / `glm-ocr`) | Inherits the original architecture |
+| Containers | Docker Compose v2 | Inherits the original architecture |
+| Deployment | Compose profiles | Each module can be started independently |
+| WSGI | gunicorn | Standard for production Flask |
 
 ---
 
-## 6. 安全模型
+## 6. Security Model
 
-这是整个项目的**硬约束**，不能违反：
+These are hard constraints for the whole project:
 
-1. **Ollama 绝不对外**：runtime 的 compose 里 `ollama` 服务**没有 `ports:` 字段**。它只在 `llm_internal` 这个 `internal: true` 网络里存在，其他容器通过 DNS 名 `http://ollama:11434` 访问它。
-2. **Web UI 只对 127.0.0.1**：唯一需要给主机可访问的就是 `web_app`。它绑 `127.0.0.1:5000:5000`，本机浏览器能打开，LAN 和公网打不到。
-3. **处理容器零外网**：所有 `modules/*` 服务都挂在 `internal: true` 网络，装完依赖后**没有外网出口**。
-4. **非 root 用户**：所有容器 `user: "10001:10001"`。
-5. **能力剥离**：`cap_drop: ALL` + `no-new-privileges:true`。
-6. **数据卷只读**：PDF 输入卷挂 `:ro`。
-7. **Seed 阶段的特殊处理**：只有 seed 阶段（临时下载模型）会有外网；seed 用完就关。日常运行不跑 seed。
+1. **Ollama is never exposed externally**. In runtime Compose, the `ollama` service has **no `ports:` field**. It exists only on the `llm_internal` `internal: true` network, and other containers access it through `http://ollama:11434`.
+2. **Web UI is bound only to 127.0.0.1**. The only service reachable from the host is `web_app`, bound as `127.0.0.1:5000:5000`. Local browsers can open it; LAN and public networks cannot.
+3. **Processing containers have no internet egress**. All `modules/*` services run on `internal: true` networks after dependencies are installed.
+4. **Non-root user**. All containers run as `user: "10001:10001"`.
+5. **Capability stripping**. Use `cap_drop: ALL` and `no-new-privileges:true`.
+6. **Read-only input volumes**. PDF input volumes are mounted `:ro`.
+7. **Special handling for seed mode**. Only the temporary seed phase has internet access for downloading models. Daily runtime does not run seed.
 
-两个网络拓扑：
+Network topology:
 
-```
-      Seed 阶段（一次性）                     Runtime 阶段（日常）
-   ┌────────────────────┐                ┌──────────────────────────┐
-   │  ollama_seed       │                │  llm_internal (internal:true)│
-   │  127.0.0.1:11434   │                │  ┌────────┐  ┌──────────┐ │
-   │  外网能下载模型       │                │  │ ollama │  │ ocr / ner │ │
-   └────────────────────┘                │  └────────┘  └──────────┘ │
-                                         │           ...              │
-                                         └──────────────────────────┘
-                                                    ▲
-                                          llm_frontend 网络
-                                                    ▲
-                                         ┌──────────────────┐
-                                         │  web_app         │
-                                         │ 127.0.0.1:5000   │
-                                         └──────────────────┘
+```text
+Seed mode, one time:
+  ollama_seed
+  127.0.0.1:11434
+  Internet access allowed only for model download.
+
+Runtime mode:
+  llm_internal (internal:true)
+    ollama
+    ocr / ner / other modules
+
+  llm_frontend
+    web_app
+    127.0.0.1:5000
 ```
 
 ---
 
-## 7. 三种运行方式
+## 7. Three Runtime Modes
 
-同一套代码支持三种方式跑，覆盖不同场景：
+The same code supports three ways to run the system:
 
-### 方式 A：完整 Web UI 模式（日常使用）
+### Mode A: Full Web UI, daily use
+
 ```bash
 docker compose up -d
-# 浏览器打开 http://127.0.0.1:5000
-# 上传 PDF → 看进度 → 下载 CSV
+# Open http://127.0.0.1:5000
+# Upload PDF -> watch progress -> download CSV
 ```
 
-### 方式 B：单模块独立容器（调试某一环）
+### Mode B: Single-module standalone container for debugging one stage
+
 ```bash
-# 只把 OCR 模块拉起来独立 UI
+# Start only Ollama and the OCR module UI
 docker compose --profile ocr-only up -d ollama ocr
-# 浏览器打开 http://127.0.0.1:5103（OCR 模块 standalone UI）
+# Open http://127.0.0.1:5103 through the configured route/proxy for the OCR standalone UI
 ```
 
-### 方式 C：CLI 单跑（脚本化、无 UI）
+### Mode C: CLI-only, scripted use with no UI
+
 ```bash
 docker compose run --rm ocr python -m modules.ocr.cli \
   --in_dir /data/pages/<doc_id> \
@@ -358,43 +300,63 @@ docker compose run --rm ocr python -m modules.ocr.cli \
   --model glm-ocr:latest
 ```
 
-三种方式用的是**同一份 `modules/ocr/core.py`**，只是入口不同。
+All three modes use the same `modules/ocr/core.py`; only the entry point differs.
 
 ---
 
-## 8. 可视化测试策略
+## 8. Visual Testing Strategy
 
-重构版的关键亮点。每个处理模块都有一个 `/test` 路由，提供专属的可视化测试 UI：
+This is one of the key features of the refactor. Every processing module has a `/test` or module UI route with dedicated visual debugging:
 
-| 模块 | 可视化展示内容 |
+| Module | Visual Output |
 |---|---|
-| 02 pdf_ingest | PDF 缩略图网格，页数/尺寸/文件大小概览 |
-| 03 ocr | 原图 → 灰度 → 去歪斜 → 裁剪 → 切片 的 5 连图；OCR 文本对齐显示；原始模型响应 JSON |
-| 04 page_classifier | OCR 全文 + 分类结果徽章 + evidence 高亮 + 各轮次模型原始响应 |
-| 05 name_extractor | 文本里所有人名高亮；四轮结果（pass1/recall/filter/verify）并排显示；被剔除候选的理由 |
-| 06 metadata_extractor | 每人一张卡片，每个字段旁挂 evidence 句子并定位到原文 |
-| 07 place_extractor | 地点路径图（有序节点）；每个地点的 evidence 高亮；日期置信度色块 |
-| 08 normalizer | 输入框任意填名字/地名/日期，实时看规范化结果 + 命中的规则 |
-| 09 aggregator | 当前 CSV 表格视图 + 差异视图（本次新增哪些行）+ 统计面板 |
-| 10 orchestrator | 总 dashboard：每页一行，列出各模块状态灯；实时日志 tail |
-| 11 web_app | 组合以上所有，加 PDF 上传、作业管理、结果下载 |
+| 02 pdf_ingest | PDF thumbnail grid, page count, dimensions, file size summary |
+| 03 ocr | Original image -> grayscale/enhanced -> deskew -> crop -> tiles; OCR text alignment; raw model response JSON |
+| 04 page_classifier | Full OCR text, classification badges, highlighted evidence, raw responses |
+| 05 name_extractor | Highlighted people in text, pass1/recall/filter/verify side-by-side, removed-candidate reasons |
+| 06 metadata_extractor | One card per person with field-level evidence linked to source text |
+| 07 place_extractor | Ordered place path, highlighted evidence for each place, date-confidence blocks |
+| 08 normalizer | Enter arbitrary names, places, dates, or text and see normalized output plus matched rules |
+| 09 aggregator | Current CSV table preview, diff view for newly added rows, statistics panel |
+| 10 orchestrator | Dashboard with one row per page, per-stage status lights, live log tail |
+| 11 web_app | Combines all of the above, plus PDF upload, job management, and result downloads |
 
-这些 UI 不是可选装饰，是**这次重构的第一等目标**。它们让你能用眼睛验证每个模块，不必靠只读打印或猜测。
-
----
-
-## 9. 成功判据
-
-重构后如果下面这些事都能做到，就算达成目标：
-
-1. 上传一份 PDF，从头跑完，得到的 CSV 与原脚本运行结果等价（或更好）。
-2. 单独拉起任何一个模块容器，它能独立工作（在有输入的前提下）。
-3. 打开任何一个模块的 `/test` 页面，能看到这个模块在一个页面/一段文本/一个人物上的全部输入输出和中间产物。
-4. Ollama 从主机和 LAN 都 ping 不到。
-5. Web UI 从 LAN 打不到，只有本机浏览器能访问。
-6. 全程运行时不需要外网。
-7. 任何一轮失败，可以从断点续跑，不重跑已完成的页面。
+These UIs are not optional decoration. They are a first-class goal of the refactor. They let users validate each module visually instead of relying only on prints or guesses.
 
 ---
 
-详细的构建顺序看 [process.md](./process.md)；每个模块的详细设计看 [modules/](./modules/) 下对应的文档。
+## 8.1 Intermediate Artifact Policy
+
+Intermediate results are first-class outputs, not throwaway cache:
+
+| Artifact | Location | Why It Must Persist |
+|---|---|---|
+| PDF source | `data/input_pdfs/<doc_id>.pdf` | Allows reruns and audit of the exact source file |
+| Page images | `data/pages/<doc_id>/pNNN.png` | Avoids re-rendering large PDFs after OCR or LLM failures |
+| OCR text | `data/ocr_text/<doc_id>/pNNN.txt` | Expensive to produce; must be inspectable and reused by every downstream module |
+| Classifier JSON | `data/intermediate/<doc_id>/pNNN.classify.json` | Decides whether downstream extraction should run |
+| Name JSON | `data/intermediate/<doc_id>/pNNN.names.json` | Stores pass-level extraction details and removed-candidate reasons |
+| Metadata JSON | `data/intermediate/<doc_id>/pNNN.meta.json` | Stores field-level extracted rows and evidence |
+| Place JSON | `data/intermediate/<doc_id>/pNNN.places.json` | Stores candidate, verified, and reconciled place rows |
+| Final CSV | `data/output/<doc_id>/*.csv` | Deliverable outputs |
+| Logs / job state | `data/logs/<doc_id>/` | Resume, dashboard, and debugging |
+
+The dashboard and module UIs should always show whether each artifact exists, when it was written, and whether it is parseable. A "rerun this page/stage" action should replace only that stage's artifact and downstream artifacts that depend on it.
+
+---
+
+## 9. Success Criteria
+
+The refactor is successful if all of the following are true:
+
+1. Uploading one PDF runs end to end and produces CSVs equivalent to, or better than, the original script output.
+2. Any module container can start independently and do its stage of work when given input.
+3. Any module `/test` page shows the full inputs, outputs, and intermediate artifacts for a page, text segment, or person.
+4. Ollama cannot be reached from the host or LAN.
+5. The Web UI cannot be reached from LAN; only the local browser can access it.
+6. Runtime processing requires no internet access.
+7. If any pass fails, rerunning can resume from the breakpoint without reprocessing completed pages.
+
+---
+
+For the detailed build order, see [process.md](./process.md). For each module's detailed design, see the numbered module documents in this directory.

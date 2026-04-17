@@ -1,32 +1,34 @@
-# 模块 06 — metadata_extractor
+# Module 06 - metadata_extractor
 
-> 对每个已识别的主体，从当前页抽取 5 个字段的案件元数据。输出 `Detailed info.csv` 的一行。
+> For each identified subject, extract five case metadata fields from the current page. Outputs one row for `Detailed info.csv`.
 
-## 1. 目的
+## 1. Purpose
 
-给定 `(ocr_text, name, page, report_type)`，通过**单次 LLM 调用** + evidence 要求 + 规则校验，产出一个 detail 行：
+Given `(ocr_text, name, page, report_type)`, produce one detail row through **a single LLM call**, evidence requirements, and rule validation:
 
-| 字段 | 类型 | 允许值 |
+| Field | Type | Allowed Values |
 |---|---|---|
-| Name | str | 主体名 |
-| Page | int | 页号 |
+| Name | str | Subject name |
+| Page | int | Page number |
 | Report Type | enum | `statement` / `transport/admin` / `correspondence` |
 | Crime Type | enum | `kidnapping` / `sale` / `trafficking` / `illegal detention` / `forced transfer` / `debt-claim transfer` / "" |
 | Whether abuse | enum | `yes` / `no` / "" |
 | Conflict Type | enum | `manumission dispute` / `ownership dispute` / `debt dispute` / `free-status dispute` / `forced-transfer dispute` / `repatriation dispute` / `kidnapping case` / "" |
 | Trial | enum | `manumission requested` / `manumission certificate requested` / `manumission recommended` / `manumission granted` / `free status confirmed` / `released` / `repatriation arranged` / `certificate delivered` / "" |
-| Amount paid | str | 字面金额字符串 或 "" |
+| Amount paid | str | Literal amount string or "" |
 
-**关键约束**：模型必须为每个非空字段给出 evidence（≤25 词的原文引用）。没有 evidence 的推断一律丢弃。
+Key constraint: the model must provide evidence for every non-empty field, using a quote of 25 words or fewer from the source text. Any inference without evidence is discarded.
 
-## 2. 输入 / 输出
+## 2. Input / Output
 
-**输入**：
+**Input**:
+
 - `data/ocr_text/<doc_id>/p<N>.txt`
 - `data/intermediate/<doc_id>/p<N>.classify.json`
 - `data/intermediate/<doc_id>/p<N>.names.json`
 
-**输出**：`data/intermediate/<doc_id>/p<N>.meta.json`
+**Output**: `data/intermediate/<doc_id>/p<N>.meta.json`
+
 ```json
 {
   "page": 12,
@@ -53,7 +55,7 @@
 }
 ```
 
-## 3. 核心算法（继承原代码 `model_meta_for_name`）
+## 3. Core Algorithm (Inherited From `model_meta_for_name`)
 
 ```python
 def extract(ocr, name, page, report_type, stats) -> DetailRow:
@@ -64,46 +66,47 @@ def extract(ocr, name, page, report_type, stats) -> DetailRow:
     return parse_meta(obj, name, page, report_type)
 ```
 
-`parse_meta` 的职责：
-- `choose_allowed(value, CRIME_TYPES)` — 不在白名单的值强制为 ""
-- `choose_yes_no_blank` — whether_abuse 必须是 yes/no/""
-- amount_paid 过滤 "null" / "none" 字面串为 ""
+Responsibilities of `parse_meta`:
 
-Prompt 从 `config/prompts/meta_pass.txt` 加载（原 `META_PASS_PROMPT` 原样搬）。
+- `choose_allowed(value, CRIME_TYPES)`: values outside the allowlist become `""`.
+- `choose_yes_no_blank`: `whether_abuse` must be `yes`, `no`, or `""`.
+- `amount_paid`: literal strings such as `"null"` or `"none"` are filtered to `""`.
 
-## 4. 目录结构
+Load the prompt from `config/prompts/meta_pass.txt`, moved from the original `META_PASS_PROMPT`.
 
-```
+## 4. Directory Structure
+
+```text
 src/modules/metadata_extractor/
-├── __init__.py
-├── core.py              # extract()
-├── vocab.py             # CRIME_TYPES / CONFLICT_TYPES / TRIAL_TYPES 等枚举
-├── parsing.py           # parse_meta() + choose_allowed
-├── blueprint.py
-├── standalone.py
-├── cli.py
-├── templates/
-│   └── ui.html
-└── tests/
-    ├── test_parsing.py
-    └── fixtures/
-        ├── kidnapping_abuse.txt
-        ├── repatriation.txt
-        └── certificate_grant.txt
+|-- __init__.py
+|-- core.py              # extract()
+|-- vocab.py             # CRIME_TYPES / CONFLICT_TYPES / TRIAL_TYPES and other enums
+|-- parsing.py           # parse_meta() + choose_allowed
+|-- blueprint.py
+|-- standalone.py
+|-- cli.py
+|-- templates/
+|   `-- ui.html
+`-- tests/
+    |-- test_parsing.py
+    `-- fixtures/
+        |-- kidnapping_abuse.txt
+        |-- repatriation.txt
+        `-- certificate_grant.txt
 ```
 
-枚举值放 `vocab.py` 并从 `config/schemas/vocab.yaml` 生成（YAML 是 source of truth，方便非程序员改）。
+Enum values should live in `vocab.py` and be generated from `config/schemas/vocab.yaml`. YAML is the source of truth so non-programmers can edit allowed values.
 
 ## 5. Blueprint API
 
-| 方法 | 路径 | 行为 |
+| Method | Path | Behavior |
 |---|---|---|
-| GET  | `/meta/` | 测试 UI |
-| GET  | `/meta/pages/<doc_id>` | 可抽 meta 的页（已有 names） |
-| GET  | `/meta/people/<doc_id>/<page>` | 该页所有已识别主体 |
-| POST | `/meta/run-single/<doc_id>/<page>/<name>` | 单人 meta 抽取 |
-| POST | `/meta/run-page/<doc_id>/<page>` | 该页所有主体 |
-| POST | `/meta/run-all/<doc_id>` | 整 doc 异步 |
+| GET | `/meta/` | Test UI |
+| GET | `/meta/pages/<doc_id>` | Pages where metadata can be extracted, meaning names already exist |
+| GET | `/meta/people/<doc_id>/<page>` | All identified subjects on the page |
+| POST | `/meta/run-single/<doc_id>/<page>/<name>` | Extract metadata for one person |
+| POST | `/meta/run-page/<doc_id>/<page>` | Extract metadata for all subjects on the page |
+| POST | `/meta/run-all/<doc_id>` | Run the whole document asynchronously |
 
 ## 6. CLI
 
@@ -115,80 +118,64 @@ python -m modules.metadata_extractor.cli \
   --model qwen2.5:14b-instruct
 ```
 
-## 7. 测试 UI 设计
+## 7. Test UI Design
 
-```
-┌────────────────────────────────────────────────────────────────────┐
-│ Doc: [ myDoc ▼ ]   Page: [ p012 ▼ ]   Person: [ Mariam b. Y. ▼ ]   │
-│ [ Extract meta for this person ]    [ Extract for all on page ]    │
-├────────────────────────────────────────────────────────────────────┤
-│ Detail row for "Mariam bint Yusuf" on page 12                       │
-│ ┌────────────────────────┐  ┌────────────────────────────────────┐ │
-│ │ 🏷 Report Type          │  │ Evidence                           │ │
-│ │    statement            │  │ (from page classifier)             │ │
-│ ├────────────────────────┤  ├────────────────────────────────────┤ │
-│ │ ⚖ Crime Type            │  │ "kidnapped when I was about 10    │ │
-│ │    kidnapping           │  │  years old from my native place"   │ │
-│ │                         │  │  [jump to in text]                 │ │
-│ ├────────────────────────┤  ├────────────────────────────────────┤ │
-│ │ 🚨 Whether abuse        │  │ "beaten severely by her owner"     │ │
-│ │    yes                  │  │  [jump to in text]                 │ │
-│ ├────────────────────────┤  ├────────────────────────────────────┤ │
-│ │ ⚔ Conflict Type         │  │ —                                  │ │
-│ │    (empty)              │  │                                    │ │
-│ ├────────────────────────┤  ├────────────────────────────────────┤ │
-│ │ 🏛 Trial                │  │ "requests manumission certificate" │ │
-│ │    manumission requested│  │  [jump to in text]                 │ │
-│ ├────────────────────────┤  ├────────────────────────────────────┤ │
-│ │ 💰 Amount paid          │  │ —                                  │ │
-│ │    (empty)              │  │                                    │ │
-│ └────────────────────────┘  └────────────────────────────────────┘ │
-├────────────────────────────────────────────────────────────────────┤
-│ OCR text with all evidence spans highlighted in different colors    │
-│ ┌────────────────────────────────────────────────────────────────┐ │
-│ │ Statement of slave Mariam bint Yusuf, aged 20, native of       │ │
-│ │ Zanzibar. She was 🟥kidnapped when I was about 10 years old    │ │
-│ │ from my native place🟥 and sold to Sheikh Rashid of Dubai. She │ │
-│ │ was 🟧beaten severely by her owner🟧 ... She now 🟩requests    │ │
-│ │ manumission certificate🟩.                                      │ │
-│ └────────────────────────────────────────────────────────────────┘ │
-├────────────────────────────────────────────────────────────────────┤
-│ Validation                                                          │
-│ ✓ Crime Type is in allowed set                                      │
-│ ✓ Whether abuse ∈ {yes,no,""}                                       │
-│ ✓ Trial is in allowed set                                           │
-│ ─ Conflict Type empty (no evidence)                                 │
-│ ─ Amount paid empty (no evidence)                                   │
-└────────────────────────────────────────────────────────────────────┘
+```text
++--------------------------------------------------------------------+
+| Doc: [ myDoc ]   Page: [ p012 ]   Person: [ Mariam b. Y. ]         |
+| [ Extract meta for this person ]    [ Extract for all on page ]    |
++--------------------------------------------------------------------+
+| Detail row for "Mariam bint Yusuf" on page 12                      |
+| Report Type     statement        Evidence: from page classifier    |
+| Crime Type      kidnapping       "kidnapped when I was about..."   |
+| Whether abuse   yes              "beaten severely by her owner"    |
+| Conflict Type   (empty)          -                                 |
+| Trial           manumission requested  "requests manumission..."   |
+| Amount paid     (empty)          -                                 |
++--------------------------------------------------------------------+
+| OCR text with all evidence spans highlighted in different colors    |
+| Statement of slave Mariam bint Yusuf, aged 20, native of Zanzibar.  |
+| She was [crime evidence] and [abuse evidence]. She now [trial].     |
++--------------------------------------------------------------------+
+| Validation                                                         |
+| OK Crime Type is in allowed set                                    |
+| OK Whether abuse is one of {yes,no,""}                             |
+| OK Trial is in allowed set                                         |
+| - Conflict Type empty (no evidence)                                |
+| - Amount paid empty (no evidence)                                  |
++--------------------------------------------------------------------+
 ```
 
-**可视化要点**：
-1. **字段卡片 + 配对 evidence**：左右对齐展示，一眼看到字段+证据对应关系
-2. **不同字段 evidence 用不同颜色在原文高亮**：红=crime, 橙=abuse, 紫=conflict, 绿=trial, 金=amount
-3. **跳转定位**：点 "[jump to in text]" 滚动到原文对应位置
-4. **Validation 面板**：显示每个字段是否通过白名单校验
-5. **空字段明确显示"—"**：区分 `""` 和 `null`
+Visualization goals:
+
+1. **Field cards plus paired evidence**: show each field next to its evidence so the relationship is immediate.
+2. **Different evidence colors in source text**: crime, abuse, conflict, trial, and amount should each have a distinct color.
+3. **Jump-to-location**: clicking an evidence link scrolls to the matching source text span.
+4. **Validation panel**: show whether each field passed allowlist validation.
+5. **Explicit empty display**: show `-` for empty fields so `""` is not confused with `null`.
 
 ## 8. Docker
 
-共用 `docker/ner.Dockerfile`。Compose 端口 5106。
+Uses shared `docker/ner.Dockerfile`. Internal Compose port is 5106.
 
-## 9. 测试
+## 9. Tests
 
-**单元测试**：
-- `choose_allowed` 白名单外的值清空
-- `choose_yes_no_blank` 对各种输入的行为
-- `parse_meta` 对缺字段、字段类型错的 JSON 的兜底
+Unit tests:
 
-**集成测试**：
-- 3 个 fixture 各测一个 meta 组合，期望输出特定字段
+- `choose_allowed` clears values outside the allowlist.
+- `choose_yes_no_blank` handles varied inputs correctly.
+- `parse_meta` has safe fallback behavior for missing fields and wrong JSON types.
 
-## 10. 构建检查清单
+Integration tests:
 
-- [ ] Prompt 抽到文件
-- [ ] Vocab 从 YAML 生成，避免硬编码
-- [ ] `parse_meta` 白名单校验严格
-- [ ] UI 字段卡片 + evidence 配对展示
-- [ ] 原文多色高亮
-- [ ] Validation 面板显示校验结果
-- [ ] 3 个 fixture 测试通过
+- Three fixtures each cover a metadata combination and assert expected fields.
+
+## 10. Build Checklist
+
+- [ ] Prompt is moved to a file.
+- [ ] Vocab is generated from YAML to avoid hard-coded values.
+- [ ] `parse_meta` performs strict allowlist validation.
+- [ ] UI shows field cards paired with evidence.
+- [ ] Source text supports multi-color highlighting.
+- [ ] Validation panel shows results.
+- [ ] Three fixture tests pass.

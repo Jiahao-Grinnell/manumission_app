@@ -1,88 +1,90 @@
 # Manumission App
 
-## 项目概述
+## Project Overview
 
-Manumission App 是一个端到端的模块化 Flask 应用程序，用于从历史奴隶/解放档案文献中提取信息。它将扫描的 PDF 文档处理为图像，进行 OCR、页面分类、命名实体识别、元数据提取和地点提取，使用 LLM 生成最终的 CSV 输出。
+Manumission App is an end-to-end modular Flask application for extracting information from historical slavery and manumission archival documents. It converts scanned PDF documents into images, runs OCR, page classification, named-entity recognition, metadata extraction, and place extraction, then uses an LLM to produce final CSV outputs.
 
-该系统从单体 Python 脚本重构为模块化服务，每个模块独立运行、可测试和可视化。
+The system has been refactored from monolithic Python scripts into modular services. Each module can run independently, be tested independently, and be visualized through its own UI.
 
-## 架构
+## Architecture
 
-系统由以下模块组成：
+The system consists of the following modules:
 
-- **shared**: 核心库，包含 LLM 客户端、模式、路径、文本工具、存储。
-- **ollama_gateway**: Ollama 容器和模型管理。
-- **pdf_ingest**: PDF 拆分为图像。
-- **ocr**: 使用视觉模型进行 OCR。
-- **page_classifier**: 分类页面是否需要提取。
-- **name_extractor**: 提取被奴役/解放的主体人名。
-- **metadata_extractor**: 提取案件元数据。
-- **place_extractor**: 提取地点路径和日期。
-- **normalizer**: 数据规范化、验证和去重。
-- **aggregator**: 聚合为最终 CSV。
-- **orchestrator**: 流水线编排与仪表板。
-- **web_app**: 主 Flask 应用与 UI。
+- **shared**: Core library containing the LLM client, schemas, paths, text utilities, and storage.
+- **ollama_gateway**: Ollama container and model management.
+- **pdf_ingest**: Splits PDFs into images.
+- **ocr**: Runs OCR with a vision model.
+- **page_classifier**: Classifies whether a page should be extracted.
+- **name_extractor**: Extracts the names of enslaved or manumitted subjects.
+- **metadata_extractor**: Extracts case metadata.
+- **place_extractor**: Extracts place paths and dates.
+- **normalizer**: Normalizes, validates, and deduplicates data.
+- **aggregator**: Aggregates intermediate data into final CSV files.
+- **orchestrator**: Pipeline orchestration and dashboard.
+- **web_app**: Main Flask application and UI.
 
-## 安装与设置
+## Installation and Setup
 
-### 先决条件
+### Prerequisites
 
-- Docker 和 Docker Compose
-- GPU 用于 Ollama（可选但推荐）
+- Docker and Docker Compose
+- GPU for Ollama (optional but recommended)
 
-### 安装步骤
+### Installation Steps
 
-1. 克隆仓库：
+1. Clone the repository:
    ```bash
    git clone https://github.com/Jiahao-Grinnell/manumission_app.git
    cd manumission_app
    ```
 
-2. 种子模型（首次需要外网）：
+2. Seed the model (internet access is required the first time):
    ```bash
    ./scripts/seed_model.sh qwen2.5:14b-instruct
    ```
 
-3. 启动服务：
+3. Start the services:
    ```bash
    docker compose up -d
    ```
 
-4. 打开浏览器：http://127.0.0.1:5000
+4. Open the browser at http://127.0.0.1:5000
 
-## 使用方法
+## Usage
 
-1. 在 `/upload` 页面上传 PDF。
-2. 监控仪表板上的流水线进度。
-3. 下载生成的 CSV 文件。
+1. Upload a PDF on the `/upload` page.
+2. For very large PDFs, place the file in `data/input_pdfs/` and register it from the input page instead of uploading through the browser.
+3. Monitor pipeline progress on the dashboard.
+4. Inspect persisted intermediate artifacts such as rendered page images, OCR text, and per-page JSON as needed.
+5. Download the generated CSV files.
 
-## 开发
+## Development
 
-每个模块的详细规范请参见 `docs/` 目录中的相应文件。
+For detailed module specifications, see the corresponding files in the `docs/` directory.
 
-### 模块列表
+### Module List
 
-- [00_shared.md](docs/00_shared.md): 共享核心库
-- [01_ollama_gateway.md](docs/01_ollama_gateway.md): Ollama 网关
-- [02_pdf_ingest.md](docs/02_pdf_ingest.md): PDF 摄取
+- [00_shared.md](docs/00_shared.md): Shared core library
+- [01_ollama_gateway.md](docs/01_ollama_gateway.md): Ollama gateway
+- [02_pdf_ingest.md](docs/02_pdf_ingest.md): PDF ingest
 - [03_ocr.md](docs/03_ocr.md): OCR
-- [04_page_classifier.md](docs/04_page_classifier.md): 页面分类器
-- [05_name_extractor.md](docs/05_name_extractor.md): 名称提取器
-- [06_metadata_extractor.md](docs/06_metadata_extractor.md): 元数据提取器
-- [07_place_extractor.md](docs/07_place_extractor.md): 地点提取器
-- [08_normalizer.md](docs/08_normalizer.md): 规范化器
-- [09_aggregator.md](docs/09_aggregator.md): 聚合器
-- [10_orchestrator.md](docs/10_orchestrator.md): 编排器
-- [11_web_app.md](docs/11_web_app.md): Web 应用
+- [04_page_classifier.md](docs/04_page_classifier.md): Page classifier
+- [05_name_extractor.md](docs/05_name_extractor.md): Name extractor
+- [06_metadata_extractor.md](docs/06_metadata_extractor.md): Metadata extractor
+- [07_place_extractor.md](docs/07_place_extractor.md): Place extractor
+- [08_normalizer.md](docs/08_normalizer.md): Normalizer
+- [09_aggregator.md](docs/09_aggregator.md): Aggregator
+- [10_orchestrator.md](docs/10_orchestrator.md): Orchestrator
+- [11_web_app.md](docs/11_web_app.md): Web application
 
-### 构建顺序
+### Build Order
 
-请按照 [process.md](docs/process.md) 中的指导顺序构建系统。
+Build the system in the order described in [process.md](docs/process.md).
 
-## 贡献
+## Contributing
 
-欢迎贡献！请遵循每个模块的构建检查清单。
+Contributions are welcome. Please follow the build checklist for each module.
 
-## 许可证
+## License
 
-[许可证信息]
+[License information]

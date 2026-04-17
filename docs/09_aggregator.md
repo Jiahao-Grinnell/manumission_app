@@ -1,37 +1,40 @@
-# 模块 09 — aggregator
+# Module 09 - aggregator
 
-> 把所有页面的中间 JSON 合并成最终的三份 CSV。纯 Python，无 LLM。
+> Merge all per-page intermediate JSON files into the three final CSV files. Pure Python, no LLM.
 
-## 1. 目的
+## 1. Purpose
 
-遍历 `data/intermediate/<doc_id>/p*.meta.json` 和 `p*.places.json`，合并成：
-- `Detailed info.csv`（每个人每页一行）
-- `name place.csv`（每个人每页每地一行）
-- `run_status.csv`（每页一行，记录处理状态）
+Traverse `data/intermediate/<doc_id>/p*.meta.json` and `p*.places.json`, then merge them into:
 
-并**在过程中应用跨页级别的清洗**（同一人不同页可能写法略有不同，需要在聚合时合并名字）。
+- `Detailed info.csv`: one row per person per page
+- `name place.csv`: one row per person, page, and place
+- `run_status.csv`: one row per page, recording processing status
 
-## 2. 输入 / 输出
+During aggregation, apply **cross-page cleaning**. The same person may be spelled slightly differently on different pages, so names should be merged at aggregation time.
 
-**输入**：
-```
+## 2. Input / Output
+
+**Input**:
+
+```text
 data/intermediate/<doc_id>/
-├── p001.classify.json
-├── p001.names.json
-├── p001.meta.json
-├── p001.places.json
-├── p002.*.json
-├── ...
+|-- p001.classify.json
+|-- p001.names.json
+|-- p001.meta.json
+|-- p001.places.json
+|-- p002.*.json
+`-- ...
 ```
 
-**输出**：`data/output/<doc_id>/`
-```
-├── Detailed info.csv     # 匹配原 DETAIL_COLUMNS
-├── name place.csv        # 匹配原 PLACE_COLUMNS
-└── run_status.csv        # 匹配原 STATUS_COLUMNS
+**Output**: `data/output/<doc_id>/`
+
+```text
+|-- Detailed info.csv     # Matches original DETAIL_COLUMNS
+|-- name place.csv        # Matches original PLACE_COLUMNS
+`-- run_status.csv        # Matches original STATUS_COLUMNS
 ```
 
-CSV 列定义继承原代码（见 `shared/schemas.py`）：
+CSV column definitions are inherited from the original code. See `shared/schemas.py`:
 
 ```python
 DETAIL_COLUMNS = ["Name","Page","Report Type","Crime Type","Whether abuse","Conflict Type","Trial","Amount paid"]
@@ -39,7 +42,7 @@ PLACE_COLUMNS  = ["Name","Page","Place","Order","Arrival Date","Date Confidence"
 STATUS_COLUMNS = ["page","filename","status","named_people","detail_rows","place_rows","model_calls","repair_calls","elapsed_seconds","note"]
 ```
 
-## 3. 核心算法
+## 3. Core Algorithm
 
 ```python
 def aggregate(doc_id: str) -> AggregationResult:
@@ -63,11 +66,11 @@ def aggregate(doc_id: str) -> AggregationResult:
             else:
                 place_rows.append(blank_place_row(person["name"], page_num))
 
-    # 跨页清洗
+    # Cross-page cleaning
     detail_rows = cleanup_detail_rows(detail_rows)
     place_rows = cleanup_place_rows(place_rows)
 
-    # 原子写
+    # Atomic writes
     write_csv_atomic(paths.output_dir / "Detailed info.csv", detail_rows, DETAIL_COLUMNS)
     write_csv_atomic(paths.output_dir / "name place.csv",   place_rows,  PLACE_COLUMNS)
     write_csv_atomic(paths.output_dir / "run_status.csv",   status_rows, STATUS_COLUMNS)
@@ -75,41 +78,42 @@ def aggregate(doc_id: str) -> AggregationResult:
     return AggregationResult(...)
 ```
 
-**跨页清洗**（聚合时新增逻辑，原系统没有）：
-- 同一 `doc_id` 内不同页出现的 "Mariam bint Yusuf" 和 "Marium bint Yusuf"，按 `names_maybe_same_person` 合并统一写法
-- `name place.csv` 按 `(Name, Page)` 内 `dedupe_place_rows`
-- 缺失字段统一为 ""（不留 None）
+Cross-page cleaning added during aggregation:
 
-## 4. 目录结构
+- In one `doc_id`, merge names such as "Mariam bint Yusuf" and "Marium bint Yusuf" with `names_maybe_same_person`.
+- Deduplicate `name place.csv` rows by `(Name, Page)` with `dedupe_place_rows`.
+- Normalize missing values to `""` and do not keep `None`.
 
-```
+## 4. Directory Structure
+
+```text
 src/modules/aggregator/
-├── __init__.py
-├── core.py              # aggregate()
-├── cleanup.py           # cleanup_detail_rows / cleanup_place_rows / 跨页合名
-├── stats.py             # 统计面板用的指标计算
-├── blueprint.py
-├── standalone.py
-├── cli.py
-├── templates/
-│   └── ui.html
-└── tests/
-    ├── test_core.py
-    └── fixtures/
-        └── mock_intermediate/   # 假的 page*.json
+|-- __init__.py
+|-- core.py              # aggregate()
+|-- cleanup.py           # cleanup_detail_rows / cleanup_place_rows / cross-page name merge
+|-- stats.py             # Metrics for the statistics panel
+|-- blueprint.py
+|-- standalone.py
+|-- cli.py
+|-- templates/
+|   `-- ui.html
+`-- tests/
+    |-- test_core.py
+    `-- fixtures/
+        `-- mock_intermediate/   # Fake page*.json
 ```
 
 ## 5. Blueprint API
 
-| 方法 | 路径 | 行为 |
+| Method | Path | Behavior |
 |---|---|---|
-| GET  | `/aggregate/` | 测试 UI |
-| GET  | `/aggregate/docs` | 所有有 intermediate 数据的 doc_id |
-| POST | `/aggregate/run/<doc_id>` | 触发聚合 |
-| GET  | `/aggregate/result/<doc_id>` | 当前 CSV 内容（JSON 返回前 100 行 + 统计） |
-| GET  | `/aggregate/download/<doc_id>/<name>.csv` | 下载 CSV 文件 |
-| GET  | `/aggregate/download/<doc_id>.zip` | 打包三份 CSV |
-| GET  | `/aggregate/stats/<doc_id>` | 统计摘要 |
+| GET | `/aggregate/` | Test UI |
+| GET | `/aggregate/docs` | All `doc_id` values with intermediate data |
+| POST | `/aggregate/run/<doc_id>` | Trigger aggregation |
+| GET | `/aggregate/result/<doc_id>` | Return current CSV contents as JSON, first 100 rows plus stats |
+| GET | `/aggregate/download/<doc_id>/<name>.csv` | Download a CSV file |
+| GET | `/aggregate/download/<doc_id>.zip` | Download all three CSV files as a zip |
+| GET | `/aggregate/stats/<doc_id>` | Statistics summary |
 
 ## 6. CLI
 
@@ -119,64 +123,54 @@ python -m modules.aggregator.cli \
   --out_dir /data/output/myDoc
 ```
 
-## 7. 测试 UI 设计
+## 7. Test UI Design
 
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│  Doc: [ myDoc ▼ ]       [ Re-aggregate ]   [ Download all (.zip) ]   │
-├──────────────────────────────────────────────────────────────────────┤
-│  Summary                                                              │
-│  ┌──────────────────┬──────────────────┬──────────────────┐          │
-│  │ Pages processed  │  Unique people   │  Detail rows     │          │
-│  │       137        │       82         │      142         │          │
-│  ├──────────────────┼──────────────────┼──────────────────┤          │
-│  │ Unique places    │  Place rows      │  Skip rate       │          │
-│  │       34         │      267         │      12%         │          │
-│  └──────────────────┴──────────────────┴──────────────────┘          │
-│                                                                        │
-│  Report type distribution    Crime type distribution                  │
-│  statement         ▓▓▓▓▓ 68  kidnapping       ▓▓▓▓ 54                 │
-│  transport/admin   ▓▓▓ 41    trafficking      ▓▓ 23                   │
-│  correspondence    ▓▓ 28     illegal detent.  ▓ 12                    │
-│                              (empty)          ▓▓▓ 53                  │
-├──────────────────────────────────────────────────────────────────────┤
-│  [ Detailed info.csv ] [ name place.csv ] [ run_status.csv ]         │
-│  (tabs switch the table below)                                        │
-│                                                                        │
-│  Filter: [ _________________________ ]   (filters current table)      │
-│                                                                        │
-│  ┌──────────────────────────────────────────────────────────────────┐ │
-│  │ Name              │Page│Report    │Crime     │Abuse│Trial │Amt  │ │
-│  ├──────────────────────────────────────────────────────────────────┤ │
-│  │ Mariam bint Yusuf │ 12 │statement │kidnapping│yes  │manu..│    │ │
-│  │ Ahmad bin Said    │ 14 │statement │sale      │     │released│   │ │
-│  │ ...               │    │          │          │     │        │   │ │
-│  └──────────────────────────────────────────────────────────────────┘ │
-│  ← prev 25 | showing 1-25 of 142 | next 25 →                         │
-├──────────────────────────────────────────────────────────────────────┤
-│  Cross-page cleanup actions (applied)                                 │
-│  • Merged 3 name variants: "Marium" → "Mariam bint Yusuf" (p14)      │
-│  • Merged 2 name variants: "Ahmed" → "Ahmad bin Said" (p17, p19)     │
-│  • Normalized 7 place variants via PLACE_MAP                          │
-└──────────────────────────────────────────────────────────────────────┘
+```text
++----------------------------------------------------------------------+
+|  Doc: [ myDoc ]       [ Re-aggregate ]   [ Download all (.zip) ]     |
++----------------------------------------------------------------------+
+|  Summary                                                             |
+|  Pages processed: 137   Unique people: 82   Detail rows: 142         |
+|  Unique places: 34      Place rows: 267     Skip rate: 12%           |
+|                                                                      |
+|  Report type distribution          Crime type distribution           |
+|  statement: 68                     kidnapping: 54                    |
+|  transport/admin: 41               trafficking: 23                   |
+|  correspondence: 28                illegal detention: 12             |
++----------------------------------------------------------------------+
+|  [ Detailed info.csv ] [ name place.csv ] [ run_status.csv ]         |
+|  Filter: [ _________________________ ]                               |
+|                                                                      |
+|  Name              Page Report    Crime      Abuse Trial       Amt   |
+|  Mariam bint Yusuf 12   statement kidnapping yes   manu...           |
+|  Ahmad bin Said    14   statement sale             released          |
+|  ...                                                                 |
+|  prev 25 | showing 1-25 of 142 | next 25                             |
++----------------------------------------------------------------------+
+|  Cross-page cleanup actions applied                                  |
+|  - Merged 3 name variants: "Marium" -> "Mariam bint Yusuf" (p14)     |
+|  - Merged 2 name variants: "Ahmed" -> "Ahmad bin Said" (p17, p19)   |
+|  - Normalized 7 place variants through PLACE_MAP                     |
++----------------------------------------------------------------------+
 ```
 
-**可视化要点**：
-1. **Summary 卡片**：最常看的数字（人、页、地、行数）一眼看全
-2. **分布条形图**：report_type 和 crime_type 的分布快速质检
-3. **三 tab 表格预览**：不下载也能看 CSV 内容
-4. **过滤器**：前端 filter 方便临时查某人某页
-5. **跨页清洗动作面板**：让你知道聚合做了哪些合并，出问题时能追溯
+Visualization goals:
+
+1. **Summary cards** show the numbers users check most often: people, pages, places, and row counts.
+2. **Distribution bar charts** make report type and crime type quality checks quick.
+3. **Three-tab table preview** lets users inspect CSV contents without downloading.
+4. **Filter box** supports quick lookup for a person or page in the current table.
+5. **Cross-page cleanup action panel** shows exactly what aggregation merged, which makes issues traceable.
 
 ## 8. Docker
 
-虽然不耗 LLM，还是给它一个独立容器以便 CI 和独立调用：
+Even though it does not use an LLM, give it a standalone container for CI and independent calls:
 
 ```yaml
   aggregator:
     build:
       context: .
-      dockerfile: docker/ner.Dockerfile     # 和 NER 共用镜像
+      dockerfile: docker/ner.Dockerfile     # Shared with NER modules
     networks: [ llm_internal ]
     volumes:
       - ./data/intermediate:/data/intermediate:ro
@@ -187,23 +181,24 @@ python -m modules.aggregator.cli \
       'modules.aggregator.standalone:create_app()'
 ```
 
-## 9. 测试
+## 9. Tests
 
-**单元测试**（最容易测的模块）：
-- `fixtures/mock_intermediate/` 放 3 页的假 JSON（含 skip 页、含多人页、含地点冲突）
-- `test_aggregate_small_doc()` 验证输出 CSV 的行数和关键字段
-- `test_cross_page_name_merge()` 验证同人不同拼写被合并
-- `test_atomic_write()` 验证半写入不会破坏旧文件（mock IO 异常）
-- `test_empty_doc()` 边界：`intermediate/` 为空时也要产出 3 份空 CSV（带表头）
+Unit tests, easiest module to test:
 
-## 10. 构建检查清单
+- Put three pages of fake JSON in `fixtures/mock_intermediate/`, including a skipped page, a multi-person page, and place conflicts.
+- `test_aggregate_small_doc()` verifies CSV row counts and key fields.
+- `test_cross_page_name_merge()` verifies same-person spelling variants are merged.
+- `test_atomic_write()` verifies an interrupted write does not corrupt the old file, using mocked I/O exceptions.
+- `test_empty_doc()` verifies an empty `intermediate/` still produces three empty CSV files with headers.
 
-- [ ] `aggregate()` 读全所有 intermediate JSON
-- [ ] CSV 列和原系统一致
-- [ ] 跨页同人合并启用
-- [ ] 原子写（tmp + rename）
-- [ ] 空数据也产出空 CSV（保留表头）
-- [ ] UI 三 tab + 过滤器 + 分页
-- [ ] 统计卡片 + 分布条形图
-- [ ] zip 下载
-- [ ] 单测覆盖 4 个典型场景
+## 10. Build Checklist
+
+- [ ] `aggregate()` reads all intermediate JSON files.
+- [ ] CSV columns match the original system.
+- [ ] Cross-page same-person merging is enabled.
+- [ ] Atomic writes use tmp + rename.
+- [ ] Empty data still produces empty CSV files with headers.
+- [ ] UI has three tabs, filter, and pagination.
+- [ ] Statistics cards and distribution bars are present.
+- [ ] Zip download works.
+- [ ] Unit tests cover four typical scenarios.

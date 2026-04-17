@@ -1,53 +1,65 @@
-# 模块 02 — pdf_ingest
+# Module 02 - pdf_ingest
 
-> PDF 拆页模块。把一份扫描版 PDF 变成每页一张高清 PNG。**流水线的新入口**。
+> PDF page-splitting module. Converts a scanned PDF into one high-resolution PNG per page. This is the **new entry point** for the pipeline.
 
-## 1. 目的
+## 1. Purpose
 
-旧系统的入口是散装页面图或 `.txt`。新系统的输入升级为**一整份 PDF**。这个模块负责：
+The old system accepted loose page images or `.txt` files. The new system accepts **a complete PDF**. This module is responsible for:
 
-1. 接收用户上传的 PDF
-2. 每页渲染为 PNG（默认 300 DPI）
-3. 生成 `manifest.json` 记录基础元数据
-4. 不做任何图像处理或 OCR — 那是下游 OCR 模块的事
+1. Receiving a PDF uploaded by the user, or registering a large PDF that already exists in `data/input_pdfs/`.
+2. Rendering each page as a PNG, defaulting to 300 DPI.
+3. Generating `manifest.json` with basic metadata, source size, and per-page status.
+4. Not performing any image processing or OCR. That belongs to the downstream OCR module.
 
-## 2. 输入 / 输出
+## 2. Input / Output
 
-**输入**：`data/input_pdfs/<doc_id>.pdf`
+**Input**: `data/input_pdfs/<doc_id>.pdf`
 
-**输出**：
-```
+Real input PDFs may be larger than 500 MB. Browser upload is a convenience path, not the only path. For large files, the preferred flow is:
+
+1. Put the PDF in `data/input_pdfs/`.
+2. Register it through the UI or CLI by selecting the file and assigning a `doc_id`.
+3. Run ingest against that existing file.
+
+**Output**:
+
+```text
 data/pages/<doc_id>/
-├── p001.png
-├── p002.png
-├── ...
-├── p137.png
-└── manifest.json
+|-- p001.png
+|-- p002.png
+|-- ...
+|-- p137.png
+`-- manifest.json
 ```
 
-`manifest.json` 示例：
+Example `manifest.json`:
+
 ```json
 {
   "doc_id": "historical_archive_vol3",
   "source_pdf": "historical_archive_vol3.pdf",
   "source_pdf_sha256": "3a7f...",
+  "source_pdf_size_bytes": 317689337,
   "page_count": 137,
   "dpi": 300,
+  "status": "complete",
+  "completed_pages": 137,
   "created_at": "2026-04-17T10:23:45Z",
+  "updated_at": "2026-04-17T10:45:12Z",
   "pages": [
-    {"page": 1,   "filename": "p001.png", "width": 2480, "height": 3508, "size_bytes": 1456789},
+    {"page": 1,   "filename": "p001.png", "width": 2480, "height": 3508, "size_bytes": 1456789, "status": "done"},
     {"page": 2,   "filename": "p002.png", "width": 2480, "height": 3508, "size_bytes": 1432109},
     ...
   ]
 }
 ```
 
-## 3. 核心算法
+## 3. Core Algorithm
 
-用 PyMuPDF（`fitz`）。它纯 Python，快，跨平台，不依赖外部可执行文件：
+Use PyMuPDF (`fitz`). It is pure Python, fast, cross-platform, and does not require external executables:
 
 ```python
-# core.py 概要
+# core.py outline
 import fitz
 from pathlib import Path
 import hashlib, json, datetime
@@ -83,45 +95,49 @@ def ingest(pdf_path: Path, out_dir: Path, dpi: int = 300) -> dict:
     return manifest
 ```
 
-**设计决策**：
-- **PNG 而非 JPEG**：OCR 质量优先，体积可以接受
-- **300 DPI 默认**：OCR 经验值，低于 200 效果差、高于 400 回报递减
-- **每页独立文件**：下游断点续跑简单
-- **不压缩**：PyMuPDF 默认 PNG 压缩就够
+Design decisions:
 
-## 4. 目录结构
+- **PNG instead of JPEG**: OCR quality is more important than file size.
+- **300 DPI by default**: A practical OCR value. Below 200 is poor; above 400 has diminishing returns.
+- **One file per page**: Downstream resume logic stays simple.
+- **One-page-at-a-time rendering**: required for large PDFs. Do not render multiple full-size pages into memory unless an explicit concurrency limit is configured.
+- **Incremental manifest updates**: after each page renders, update `manifest.json` atomically so interrupted ingest can resume without starting over.
+- **No custom compression**: PyMuPDF's default PNG compression is enough.
 
-```
+## 4. Directory Structure
+
+```text
 src/modules/pdf_ingest/
-├── __init__.py
-├── core.py              # ingest() 核心
-├── blueprint.py         # Flask blueprint，挂到主 app 或 standalone
-├── standalone.py        # 单独跑时的 app factory
-├── cli.py               # CLI 入口：python -m modules.pdf_ingest.cli
-├── templates/
-│   ├── ui.html          # 测试 UI
-│   └── _partials/
-│       └── thumb_grid.html
-├── static/
-│   └── ingest.css
-└── tests/
-    ├── test_core.py
-    └── fixtures/
-        └── tiny.pdf     # 2 页的测试 PDF
+|-- __init__.py
+|-- core.py              # ingest() core
+|-- blueprint.py         # Flask blueprint for main app or standalone mode
+|-- standalone.py        # App factory for standalone mode
+|-- cli.py               # CLI entry point: python -m modules.pdf_ingest.cli
+|-- templates/
+|   |-- ui.html          # Test UI
+|   `-- _partials/
+|       `-- thumb_grid.html
+|-- static/
+|   `-- ingest.css
+`-- tests/
+    |-- test_core.py
+    `-- fixtures/
+        `-- tiny.pdf     # 2-page test PDF
 ```
 
-## 5. Blueprint（HTTP API）
+## 5. Blueprint (HTTP API)
 
-| 方法 | 路径 | 行为 |
+| Method | Path | Behavior |
 |---|---|---|
-| GET  | `/ingest/` | 测试 UI 页面 |
-| POST | `/ingest/upload` | 表单上传 PDF（`multipart/form-data`，字段 `pdf` + 可选 `doc_id`） |
-| POST | `/ingest/run` | 对已存在的 `data/input_pdfs/<doc_id>.pdf` 触发拆页（JSON body: `{"doc_id":"xxx","dpi":300}`） |
-| GET  | `/ingest/manifest/<doc_id>` | 返回已拆文档的 manifest |
-| GET  | `/ingest/thumb/<doc_id>/<page>` | 返回指定页的缩略图（max-width 200px，动态生成） |
-| GET  | `/ingest/page/<doc_id>/<page>` | 返回原图（动态） |
+| GET | `/ingest/` | Test UI page |
+| POST | `/ingest/upload` | Upload a PDF form (`multipart/form-data`, field `pdf` plus optional `doc_id`) |
+| POST | `/ingest/register` | Register an existing file from `data/input_pdfs/` without uploading it through Flask |
+| POST | `/ingest/run` | Split an existing `data/input_pdfs/<doc_id>.pdf` (JSON body: `{"doc_id":"xxx","dpi":300}`) |
+| GET | `/ingest/manifest/<doc_id>` | Return the manifest for an ingested document |
+| GET | `/ingest/thumb/<doc_id>/<page>` | Return a generated thumbnail for a page (max-width 200px) |
+| GET | `/ingest/page/<doc_id>/<page>` | Return the original page image |
 
-**只接受从 127.0.0.1 来的请求**（由主 web_app 的中间件保证，参见模块 11）。
+Requests are accepted only from `127.0.0.1`, enforced by the main `web_app` middleware. See module 11.
 
 ## 6. CLI
 
@@ -133,8 +149,9 @@ python -m modules.pdf_ingest.cli \
   --out /data/pages
 ```
 
-输出：
-```
+Output:
+
+```text
 [1/137] Rendering p001.png
 [2/137] Rendering p002.png
 ...
@@ -142,36 +159,40 @@ Done. Wrote 137 pages to /data/pages/myDoc/
 Manifest: /data/pages/myDoc/manifest.json
 ```
 
-## 7. 测试 UI 设计
+## 7. Test UI Design
 
-一个 Jinja 页面，三个区：
+A Jinja page with three areas:
 
+```text
++---------------------------------------------------------------+
+|  [Upload form]                                                |
+|  File: [ choose PDF ]    Doc ID: [ __________ ]   [Upload]   |
++---------------------------------------------------------------+
+|  Existing input PDF: [ dropdown: full input.pdf / ... ]       |
+|  Doc ID: [ __________ ]   [ Register without upload ]         |
++---------------------------------------------------------------+
+|  Select existing doc: [ dropdown: myDoc / demo / ... ]        |
++---------------------------------------------------------------+
+|  Manifest summary: 137 pages @ 300 DPI, 425 MB, uploaded ...  |
+|                                                               |
+|  [p001] [p002] [p003] [p004] [p005] [p006] ...                |
+|  thumb  thumb  thumb  thumb  thumb  thumb                    |
+|                                                               |
+|  Click a thumbnail to open a lightbox with the original image. |
++---------------------------------------------------------------+
 ```
-┌───────────────────────────────────────────────────────────────┐
-│  [Upload form]                                                │
-│  File: [ choose PDF ]    Doc ID: [ __________ ]   [Upload]   │
-├───────────────────────────────────────────────────────────────┤
-│  Select existing doc: [ dropdown: myDoc / demo / ... ]        │
-├───────────────────────────────────────────────────────────────┤
-│  Manifest summary: 137 pages @ 300 DPI, 425 MB, uploaded ...  │
-│                                                               │
-│  ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐        │
-│  │ p001 │ │ p002 │ │ p003 │ │ p004 │ │ p005 │ │ p006 │  ...   │
-│  │ thumb│ │ thumb│ │ thumb│ │ thumb│ │ thumb│ │ thumb│        │
-│  └──────┘ └──────┘ └──────┘ └──────┘ └──────┘ └──────┘        │
-│                                                               │
-│  (点缩略图弹出 lightbox 看原图)                                 │
-└───────────────────────────────────────────────────────────────┘
-```
 
-**可视化要点**：
-- 缩略图 grid 一目了然看是不是拆对了（比如颠倒、空白页、双页连版）
-- 点图能放大，肉眼验证清晰度足够 OCR
-- Manifest 摘要给人一个总量感
+Visualization goals:
 
-## 8. 独立 Docker 容器
+- The thumbnail grid makes it obvious whether splitting worked, including upside-down pages, blank pages, or two-page spreads.
+- Clicking an image allows visual inspection of whether resolution is high enough for OCR.
+- The manifest summary gives a quick sense of document size and scale.
+- For large PDFs, the UI should show file size, completed pages, estimated disk expansion, free-space warning, and a resume button when `manifest.json` is partial.
 
-`docker/ingest.Dockerfile`：
+## 8. Standalone Docker Container
+
+`docker/ingest.Dockerfile`:
+
 ```dockerfile
 FROM llm-pipeline-base:latest
 USER root
@@ -180,7 +201,8 @@ COPY src/modules/pdf_ingest /app/modules/pdf_ingest
 USER 10001:10001
 ```
 
-`compose.yaml` 片段（profile 方式，可选拉起）：
+`compose.yaml` fragment using profiles:
+
 ```yaml
   pdf_ingest:
     build:
@@ -196,28 +218,35 @@ USER 10001:10001
       'modules.pdf_ingest.standalone:create_app()'
 ```
 
-注意：服务没有 `ports:` 段，外界不可达。要通过 web_app 才能访问（Web 主程序反代到它），或从宿主用 `docker compose exec` 手工调。
+Note: the service has no `ports:` block, so it is not externally reachable. Access it through `web_app`, or call it manually with `docker compose exec` from the host.
 
-## 9. 单元测试
+## 9. Unit Tests
 
-- 用 `tests/fixtures/tiny.pdf`（2 页）
-- 测 `page_count == 2`
-- 测 PNG 文件确实生成、尺寸 > 0
-- 测 manifest 校验（sha 稳定）
-- 测 idempotency：重复调用 `ingest()` 不报错、结果相同
+- Use `tests/fixtures/tiny.pdf`, a two-page PDF.
+- Assert `page_count == 2`.
+- Assert PNG files are generated and dimensions are greater than zero.
+- Validate the manifest, including a stable SHA.
+- Test idempotency: repeated calls to `ingest()` do not fail and produce the same result.
+- Add a sample-input smoke test using a reduced page range from `sample input 1.pdf` or `sample input 2.pdf`.
+- Add a full-input smoke test that can be run manually against `full input.pdf` or another large local file. It should verify streaming behavior, resumability, and manifest correctness without committing the PDF to git.
 
-## 10. 性能 / 故障
+## 10. Performance / Failure Modes
 
-- **吞吐**：300 DPI 一页约 0.3–0.8 秒（CPU bound）
-- **内存**：每页 peak ~200 MB（PyMuPDF 渲染时），大 PDF 不要并行
-- **坏 PDF**：加密/损坏/扫描不规范，catch 并记进 manifest 的 `warnings` 数组
-- **中文/特殊字符文件名**：用 SHA-256 作为 `doc_id` 默认值避免问题
+- **Throughput**: 300 DPI takes about 0.3 to 0.8 seconds per page and is CPU-bound.
+- **Memory**: Peak memory is about 200 MB per page while PyMuPDF renders. Avoid parallel rendering for large PDFs unless a strict worker limit is configured.
+- **Disk expansion**: rendered PNGs can be much larger than the source PDF. Before ingesting a large PDF, estimate required disk space and warn if free space is low.
+- **Large PDFs**: files over 500 MB should be supported through `data/input_pdfs/` registration even if browser upload limits are lower.
+- **Bad PDFs**: Encrypted, damaged, or irregular scans should be caught and recorded in a `warnings` array in the manifest.
+- **Chinese or special-character filenames**: Use SHA-256 as the default `doc_id` to avoid path issues.
 
-## 11. 构建检查清单
+## 11. Build Checklist
 
-- [ ] `core.ingest()` 函数写好、单测通过
-- [ ] Blueprint 6 个路由全实现
-- [ ] CLI 能跑
-- [ ] Dockerfile 构建通过
-- [ ] Standalone compose profile 能拉起、能访问测试 UI（经由反代）
-- [ ] 测试 PDF 上传 → 看到缩略图 → manifest 正确
+- [ ] `core.ingest()` is implemented and unit tests pass.
+- [ ] All seven blueprint routes are implemented.
+- [ ] Existing-file registration works for PDFs already in `data/input_pdfs/`.
+- [ ] CLI works.
+- [ ] Dockerfile builds.
+- [ ] Standalone Compose profile starts and the test UI is reachable through the proxy.
+- [ ] Test PDF upload produces thumbnails and a correct manifest.
+- [ ] Large-PDF resume works from a partial manifest.
+- [ ] UI warns about estimated disk expansion and low free space.

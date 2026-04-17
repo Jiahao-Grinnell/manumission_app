@@ -1,0 +1,21 @@
+# Local input documents and large runtime artifacts
+*.pdf
+*.PDF
+data/
+volumes/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Environment and local config
+.env
+.venv/
+venv/
+
+# OS / editor
+.DS_Store
+Thumbs.db

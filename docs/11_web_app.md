@@ -1,64 +1,69 @@
-# 模块 11 — web_app
+# Module 11 - web_app
 
-> Flask 主程序。把所有模块的 blueprint 挂成一个统一的 web UI，是**唯一**对宿主机（`127.0.0.1` only）暴露端口的服务。
+> Main Flask application. Mounts every module blueprint into one unified web UI, and is the **only** service that exposes a port to the host (`127.0.0.1` only).
 
-## 1. 目的
+## 1. Purpose
 
-提供用户入口：
-- PDF 上传
-- Dashboard（继承 orchestrator 的 UI 作为首页）
-- 跳转到各模块测试 UI
-- 作业列表与历史
-- CSV 下载
-- 全局导航和鉴权
+Provide the user entry point:
 
-这一层**不写业务逻辑**，它只做"挂 blueprint + 导航 + 鉴权 + 启动 gunicorn"。
+- PDF upload
+- registration of large PDFs already placed in `data/input_pdfs/`
+- Dashboard, inherited from the orchestrator UI as the home page
+- Navigation to each module's test UI
+- Job list and history
+- CSV downloads
+- Global navigation and authentication
 
-## 2. 两种部署形态
+This layer contains **no business logic**. It only mounts blueprints, provides navigation, enforces access control, and starts gunicorn.
 
-### 2.1 单体模式（推荐日常用）
+## 2. Two Deployment Modes
 
-主 web_app 进程里挂全部 blueprint（02~10）。一个容器跑所有东西，Ollama 独立容器。
+### 2.1 Monolith Mode (recommended for daily use)
 
-好处：无 HTTP 序列化开销；调试简单；资源占用低。
-坏处：某模块崩溃波及全局。
+The main `web_app` process mounts all blueprints from modules 02 through 10. One container runs everything except Ollama, which remains an independent container.
 
-### 2.2 微服务模式（调试或隔离时用）
+Benefits: no HTTP serialization overhead, simpler debugging, and lower resource usage.
 
-每个模块独立容器（有自己的 blueprint + standalone app），web_app 只是反向代理。orchestrator 用 `ORCH_MODE=http` 通过内部网络调。
+Tradeoff: a crash in one module can affect the whole app.
 
-好处：模块隔离、独立扩缩容、独立重启。
-坏处：部署复杂、调试慢。
+### 2.2 Microservice Mode (for debugging or isolation)
 
-**同一套代码两种模式**。切换靠 compose profile + 环境变量 `ORCH_MODE`。
+Each module runs as its own container with its own blueprint and standalone app. `web_app` acts as a reverse proxy. The orchestrator uses `ORCH_MODE=http` and calls modules over the internal network.
 
-## 3. 目录结构
+Benefits: module isolation, independent scaling, and independent restarts.
 
-```
+Tradeoff: more deployment complexity and slower debugging.
+
+The same code supports both modes. Switch with Compose profiles and the `ORCH_MODE` environment variable.
+
+## 3. Directory Structure
+
+```text
 src/web_app/
-├── __init__.py
-├── app.py               # create_app() factory
-├── register.py          # 挂所有 blueprint
-├── routes.py            # 主页 / 上传页 / jobs 列表 / 健康检查
-├── auth.py              # 本地访问限制中间件
-├── errors.py            # 错误处理器
-├── templates/
-│   ├── base.html        # 全局布局 + 导航
-│   ├── home.html        # 首页（= dashboard）
-│   ├── upload.html
-│   ├── jobs.html
-│   └── download.html
-├── static/
-│   ├── pico.min.css     # 简约框架
-│   ├── app.css
-│   └── app.js
-├── wsgi.py              # gunicorn 入口
-└── tests/
-    ├── test_routes.py
-    └── test_auth.py
+|-- __init__.py
+|-- app.py               # create_app() factory
+|-- register.py          # Mount all blueprints
+|-- routes.py            # Home / upload / jobs list / health checks
+|-- auth.py              # Local-only access middleware
+|-- errors.py            # Error handlers
+|-- templates/
+|   |-- base.html        # Global layout + navigation
+|   |-- home.html        # Home page, same as dashboard
+|   |-- upload.html
+|   |-- inputs.html      # Register existing large PDFs from data/input_pdfs/
+|   |-- jobs.html
+|   `-- download.html
+|-- static/
+|   |-- pico.min.css     # Minimal CSS framework
+|   |-- app.css
+|   `-- app.js
+|-- wsgi.py              # gunicorn entry point
+`-- tests/
+    |-- test_routes.py
+    `-- test_auth.py
 ```
 
-## 4. app factory
+## 4. App Factory
 
 ```python
 # app.py
@@ -71,7 +76,9 @@ from shared.logging_setup import setup_logger
 
 def create_app() -> Flask:
     app = Flask(__name__, template_folder="templates", static_folder="static")
-    app.config["MAX_CONTENT_LENGTH"] = 500 * 1024 * 1024   # 500 MB PDF 上限
+    # Configurable upload limit. Production inputs may exceed 500 MB,
+    # so large files should also be supported through input-folder registration.
+    app.config["MAX_CONTENT_LENGTH"] = settings.MAX_UPLOAD_BYTES
     app.config["UPLOAD_FOLDER"] = settings.DATA_ROOT / "input_pdfs"
     setup_logger("web", settings.DATA_ROOT / "logs")
 
@@ -84,11 +91,11 @@ def create_app() -> Flask:
     return app
 ```
 
-## 5. register.py
+## 5. `register.py`
 
 ```python
 def register_blueprints(app):
-    # 每个模块暴露自己的 bp
+    # Each module exposes its own bp.
     from modules.pdf_ingest.blueprint import bp as ingest_bp
     from modules.ocr.blueprint import bp as ocr_bp
     from modules.page_classifier.blueprint import bp as classify_bp
@@ -110,52 +117,55 @@ def register_blueprints(app):
     app.register_blueprint(orch_bp,     url_prefix="/orchestrate")
 ```
 
-**微服务模式下**：`register.py` 只挂 `orch_bp`，其他由反向代理（`web_app` 做 reverse proxy 到对应模块 service）。
+In microservice mode, `register.py` only mounts `orch_bp`; the others are reached through reverse proxy routes from `web_app` to the corresponding service.
 
-## 6. auth.py —— 本地访问限制
+## 6. `auth.py` - Local Access Restriction
 
-双重保险（即使 compose 配错，也不至于 LAN 能访问）：
+Double protection, so LAN access still fails even if Compose is misconfigured:
 
 ```python
 from flask import request, abort
 from ipaddress import ip_address
 
 def local_only():
-    # 浏览器直连时 remote_addr = 客户端 IP
-    # 经反代时 X-Forwarded-For 可能带值；但我们的 reverse proxy 在容器内
+    # For direct browser connections, remote_addr is the client IP.
+    # With a proxy, X-Forwarded-For may exist, but our reverse proxy is inside the container network.
     remote = request.remote_addr
     if remote is None:
         abort(403)
     addr = ip_address(remote)
     if not (addr.is_loopback or addr.is_private):
-        # Docker 桥接一般给 172.17.0.x，算 private → 允许
-        # LAN/互联网 → 拒绝
+        # Docker bridge addresses are usually 172.17.0.x and count as private, so they are allowed.
+        # LAN or internet clients are rejected.
         abort(403)
 ```
 
-容器外层还有 compose 的 `127.0.0.1:5000:5000` 绑定做第一层屏障。auth.py 是第二层。
+Compose binding `127.0.0.1:5000:5000` is the first layer. `auth.py` is the second layer.
 
-## 7. routes.py
+## 7. `routes.py`
 
-| 方法 | 路径 | 页面 |
+| Method | Path | Page |
 |---|---|---|
-| GET  | `/` | 首页（dashboard） |
-| GET  | `/upload` | PDF 上传表单 |
-| POST | `/upload` | 接收文件，保存到 `data/input_pdfs/`，重定向到 `/orchestrate/run?doc_id=...` |
-| GET  | `/jobs` | 所有历史作业列表 |
-| GET  | `/download/<doc_id>` | 下载该 doc 的 CSV（调 aggregator） |
-| GET  | `/health` | liveness：返回 200 |
-| GET  | `/ready` | readiness：检查 Ollama 可达 + 所有模块蓝图注册 |
+| GET | `/` | Home page, the dashboard |
+| GET | `/upload` | PDF upload form |
+| POST | `/upload` | Receive a file, save to `data/input_pdfs/`, and redirect to `/orchestrate/run?doc_id=...` |
+| GET | `/inputs` | List PDFs already present in `data/input_pdfs/` |
+| POST | `/inputs/register` | Register an existing PDF without streaming it through Flask |
+| GET | `/jobs` | Historical job list |
+| GET | `/download/<doc_id>` | Download CSVs for the document, through aggregator |
+| GET | `/health` | Liveness, returns 200 |
+| GET | `/ready` | Readiness, checks Ollama reachability and blueprint registration |
 
-## 8. base.html 导航
+## 8. `base.html` Navigation
 
-全站共享一个 nav：
+Shared navigation:
 
 ```html
 <nav>
   <ul>
     <li><a href="/">Dashboard</a></li>
     <li><a href="/upload">Upload PDF</a></li>
+    <li><a href="/inputs">Input PDFs</a></li>
     <li><a href="/jobs">Jobs</a></li>
   </ul>
   <ul>
@@ -172,17 +182,18 @@ def local_only():
 </nav>
 ```
 
-每个模块的测试 UI 都通过这个 nav 可达。
+Each module's test UI is reachable through this navigation.
 
 ## 9. Docker
 
-`docker/web.Dockerfile`：
+`docker/web.Dockerfile`:
+
 ```dockerfile
 FROM llm-pipeline-base:latest
 USER root
 COPY requirements/web.txt /tmp/web.txt
 RUN pip install --no-cache-dir -r /tmp/web.txt
-# 单体模式：所有模块代码都带进来
+# Monolith mode: include all module code
 COPY src/shared /app/shared
 COPY src/modules /app/modules
 COPY src/orchestrator /app/orchestrator
@@ -194,7 +205,8 @@ ENV FLASK_APP=web_app.app:create_app
 EXPOSE 5000
 ```
 
-`compose.yaml` 片段：
+`compose.yaml` fragment:
+
 ```yaml
   web_app:
     build:
@@ -205,14 +217,14 @@ EXPOSE 5000
         condition: service_healthy
     networks:
       - llm_internal
-      - llm_frontend     # ← 这是 web_app 独有的
+      - llm_frontend     # Unique to web_app
     ports:
-      - "127.0.0.1:5000:5000"   # ← 只绑 localhost，不绑 0.0.0.0
+      - "127.0.0.1:5000:5000"   # Bind localhost only, not 0.0.0.0
     volumes:
       - ./data:/data
       - ./config:/app/config:ro
     environment:
-      - ORCH_MODE=inproc          # 单体：直接函数调用
+      - ORCH_MODE=inproc          # Monolith: direct function calls
       - OLLAMA_URL=http://ollama:11434/api/generate
       - OLLAMA_MODEL=qwen2.5:14b-instruct
     command: >
@@ -224,19 +236,20 @@ EXPOSE 5000
 networks:
   llm_internal:
     internal: true
-  llm_frontend:           # 只用来让 web_app 暴露 5000 到宿主
+  llm_frontend:           # Only used to expose web_app 5000 to the host
     driver: bridge
 ```
 
-**关键**：
-- `ports: "127.0.0.1:5000:5000"` — 绑 localhost，**不**绑 `0.0.0.0`。LAN 和公网打不到。
-- gunicorn `-w 4 --threads 2`：4 进程 × 2 线程，适合 Flask + 大量同时打开的 dashboard 页
-- `--timeout 3600`：OCR 单次调用可能几分钟，不能让 worker 被杀
-- `restart: unless-stopped`：自动恢复
+Key points:
 
-## 10. 微服务模式额外配置
+- `ports: "127.0.0.1:5000:5000"` binds localhost and **does not** bind `0.0.0.0`. LAN and public networks cannot reach it.
+- gunicorn `-w 4 --threads 2`: four processes times two threads, suitable for Flask plus many simultaneously open dashboard pages.
+- `--timeout 3600`: OCR calls can take minutes, so workers must not be killed early.
+- `restart: unless-stopped`: automatic recovery.
 
-`compose.yaml` 里加 `--profile micro`，启所有模块服务并让 web_app 做反代：
+## 10. Extra Configuration for Microservice Mode
+
+Add `--profile micro` in `compose.yaml`, start all module services, and let `web_app` proxy:
 
 ```yaml
   web_app:
@@ -249,56 +262,62 @@ networks:
     profiles: [ "all", "micro" ]
 ```
 
-在 `register.py` 里检测 `ORCH_MODE=http`，不再挂 blueprint，而是通过 `flask-reverse-proxy` 或自写一个简单的代理把 `/ocr/*` 请求转发到 `http://ocr:5103/ocr/*`。
+When `register.py` detects `ORCH_MODE=http`, it stops mounting those blueprints directly and instead forwards `/ocr/*` and similar requests to the service, either with `flask-reverse-proxy` or a small custom proxy.
 
-## 11. 启动流程
+## 11. Startup Flow
 
-第一次：
+First time:
+
 ```bash
-./scripts/seed_model.sh qwen2.5:14b-instruct   # 下模型（只这步需要外网）
-docker compose up -d                            # 启动全栈
-# 浏览器打开 http://127.0.0.1:5000
+./scripts/seed_model.sh qwen2.5:14b-instruct   # Download model; only this step needs internet
+docker compose up -d                            # Start the full stack
+# Open http://127.0.0.1:5000 in the browser
 ```
 
-日常：
+Daily use:
+
 ```bash
 docker compose up -d
-# 浏览器打开 http://127.0.0.1:5000
-# 在 /upload 页传 PDF → 自动跳到 dashboard → 看着跑完 → /download/<doc_id> 下 CSV
+# Open http://127.0.0.1:5000
+# Upload a PDF on /upload, or place a large PDF in data/input_pdfs/ and register it from /inputs
+# Dashboard runs -> download CSVs from /download/<doc_id>
 ```
 
-## 12. 测试
+## 12. Tests
 
-- `test_routes.py`：基本 200/302 检查；上传小 PDF 能重定向到 dashboard
-- `test_auth.py`：模拟 LAN IP 请求应 403；loopback 应 200
-- `test_blueprints_registered.py`：确认所有 9 个 blueprint 都挂上了
+- `test_routes.py`: basic 200/302 checks; uploading a small PDF redirects to the dashboard.
+- `test_inputs.py`: existing PDFs in `data/input_pdfs/` can be listed and registered without upload.
+- `test_auth.py`: simulated LAN IP requests return 403; loopback requests return 200.
+- `test_blueprints_registered.py`: verify all nine blueprints are mounted.
 
-## 13. 可观测性
+## 13. Observability
 
-- `/health` 和 `/ready` 分离
-- 结构化日志：每个请求带 `X-Request-Id`（中间件生成 UUID）
-- `/jobs` 页聚合 `data/logs/` 下所有 job.json
+- `/health` and `/ready` are separate.
+- Structured logs include `X-Request-Id`, generated by middleware.
+- `/jobs` aggregates every `job.json` under `data/logs/`.
 
-## 14. 安全检查清单
+## 14. Security Checklist
 
-- [ ] `ports:` 严格 `127.0.0.1:5000:5000`，不写 `0.0.0.0` 或仅 `5000:5000`
-- [ ] `auth.local_only` 生效，远程 IP 请求被 403
-- [ ] 上传文件类型仅 `application/pdf`，size ≤ 500 MB
-- [ ] Upload 文件名 `secure_filename`，不允许路径遍历
-- [ ] gunicorn 非 root 用户跑
-- [ ] `data/` 只容器内挂载，宿主不暴露
-- [ ] Ollama 容器无 `ports:`
+- [ ] `ports:` is strictly `127.0.0.1:5000:5000`; do not use `0.0.0.0` or only `5000:5000`.
+- [ ] `auth.local_only` works and remote IP requests receive 403.
+- [ ] Uploaded file type is limited to `application/pdf`; upload size is configurable with `MAX_UPLOAD_BYTES`.
+- [ ] PDFs larger than the browser upload limit can be processed through `data/input_pdfs/` registration.
+- [ ] Upload filename uses `secure_filename`; path traversal is not allowed.
+- [ ] gunicorn runs as a non-root user.
+- [ ] `data/` is only mounted inside containers and is not otherwise exposed from the host.
+- [ ] Ollama container has no `ports:`.
 
-## 15. 构建检查清单
+## 15. Build Checklist
 
-- [ ] `create_app()` factory 写好
-- [ ] `register_blueprints` 挂 9 个 bp
-- [ ] `local_only` 中间件生效
-- [ ] `base.html` 导航含所有模块链接
-- [ ] 上传页→启动 job→跳 dashboard 流畅
-- [ ] `/jobs` 列表页列出所有已完成和进行中
-- [ ] `/download/<doc_id>` 下载 zip
-- [ ] `127.0.0.1` 访问成功、LAN IP 访问失败（双重验证：compose 绑定 + auth）
-- [ ] gunicorn 多 worker 跑稳
-- [ ] 单体模式 + 微服务模式都能启动
-- [ ] 端到端：上传 PDF → 全流程完成 → 下载 CSV 验证内容与原脚本等价
+- [ ] `create_app()` factory is implemented.
+- [ ] `register_blueprints` mounts nine blueprints.
+- [ ] `local_only` middleware works.
+- [ ] `base.html` navigation includes all module links.
+- [ ] Upload page starts a job and redirects smoothly to the dashboard.
+- [ ] Existing-input registration starts a job for large PDFs without requiring browser upload.
+- [ ] `/jobs` lists completed and running jobs.
+- [ ] `/download/<doc_id>` downloads a zip.
+- [ ] `127.0.0.1` access succeeds and LAN IP access fails, verified at both Compose binding and auth layers.
+- [ ] gunicorn is stable with multiple workers.
+- [ ] Both monolith and microservice modes start.
+- [ ] End to end: upload or register a PDF, complete the full pipeline, download CSVs, and verify output is equivalent to the original script.

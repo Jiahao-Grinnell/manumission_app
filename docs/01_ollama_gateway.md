@@ -1,18 +1,19 @@
-# 模块 01 — ollama_gateway
+# Module 01 - ollama_gateway
 
-> Ollama 容器本身 + 它的运行时网络契约。基础设施模块，不写 Python 业务代码。
+> The Ollama container itself plus its runtime network contract. This is an infrastructure module and contains no Python business code.
 
-## 1. 目的
+## 1. Purpose
 
-所有模块里，**只有这一个**需要 GPU、占大内存（14B 模型约 9 GB VRAM）、并且是**共享依赖**。把它独立成一个网关，让其他模块通过内部网络调用它。
+Among all modules, **only this one** requires a GPU, uses a large amount of memory (a 14B model uses about 9 GB VRAM), and acts as a **shared dependency**. It is isolated as a gateway so every other module can call it over the internal network.
 
-这个模块的"代码"主要是 **compose 定义、Dockerfile 参数、运行脚本**。不写 Python。
+The "code" for this module is mainly **Compose definitions, Docker parameters, and runtime scripts**. It does not add Python code.
 
-## 2. 两套部署形态
+## 2. Two Deployment Modes
 
-### 2.1 Seed 形态（临时联网下载模型）
+### 2.1 Seed Mode (temporary internet access for model download)
 
-`compose.seed.yaml`：
+`compose.seed.yaml`:
+
 ```yaml
 services:
   ollama_seed:
@@ -26,7 +27,7 @@ services:
     volumes:
       - ./volumes/ollama:/home/ollama/.ollama
     ports:
-      - "127.0.0.1:11434:11434"    # ← 只绑 localhost
+      - "127.0.0.1:11434:11434"    # Bind localhost only
     deploy:
       resources:
         reservations:
@@ -35,14 +36,16 @@ services:
     cap_drop: [ ALL ]
 ```
 
-**关键点**：
-- `127.0.0.1:11434` — 绑 localhost 而非 `0.0.0.0`，LAN 和公网都打不到
-- 这个 compose 只在**下载模型时**起来，下完立刻 `down`
-- 模型文件落地在 `./volumes/ollama/`，runtime 形态挂这个卷就能用
+Key points:
 
-### 2.2 Runtime 形态（离线运行）
+- `127.0.0.1:11434` binds localhost, not `0.0.0.0`, so LAN and public networks cannot reach it.
+- This Compose file is used **only while downloading models**. Shut it down immediately afterward.
+- Model files persist under `./volumes/ollama/`, and runtime mode mounts that volume.
 
-`compose.yaml` 里的 `ollama` 服务：
+### 2.2 Runtime Mode (offline operation)
+
+The `ollama` service in `compose.yaml`:
+
 ```yaml
 services:
   ollama:
@@ -54,10 +57,10 @@ services:
       - HOME=/home/ollama
     user: "10001:10001"
     volumes:
-      - ./volumes/ollama:/home/ollama/.ollama:ro   # 只读，模型不可改
+      - ./volumes/ollama:/home/ollama/.ollama:ro   # Read-only; models cannot be changed
     networks:
-      - llm_internal                                # ← 只在内部网络
-    # 注意：没有 ports: 字段
+      - llm_internal                                # Internal network only
+    # Note: no ports: field
     restart: unless-stopped
     deploy:
       resources:
@@ -74,22 +77,24 @@ services:
 
 networks:
   llm_internal:
-    internal: true      # ← 关键：无外网出口
+    internal: true      # Critical: no internet egress
 ```
 
-**关键点**：
-- **没有 `ports:`** → 主机完全访问不到
-- `internal: true` → 容器在这网络里 ping 不通外网（Ollama 再高的权限都没法联网）
-- 卷挂成 `:ro` → 运行时不能往里写（防止模型被篡改）
-- healthcheck → Compose 知道它什么时候可用
+Key points:
 
-## 3. 模型管理
+- There is **no `ports:` field**, so the host cannot reach Ollama directly.
+- `internal: true` prevents containers on this network from reaching the internet.
+- The volume is mounted `:ro`, so runtime cannot modify model files.
+- The healthcheck lets Compose know when Ollama is ready.
 
-### 3.1 Approved model 清单
+## 3. Model Management
 
-`config/approved_model_tags.json` 手工维护一个白名单，列出允许使用的模型。运行时 `OllamaClient.wait_ready()` 之后可选地校验当前 Ollama 里的模型在白名单内。
+### 3.1 Approved Model List
 
-示例：
+Maintain `config/approved_model_tags.json` manually as an allowlist of permitted models. After `OllamaClient.wait_ready()`, runtime code may optionally verify that the models in Ollama are in this allowlist.
+
+Example:
+
 ```json
 {
   "approved": [
@@ -100,9 +105,10 @@ networks:
 }
 ```
 
-### 3.2 下载脚本
+### 3.2 Download Script
 
-`scripts/seed_model.sh`：
+`scripts/seed_model.sh`:
+
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
@@ -115,42 +121,44 @@ docker compose -f compose.seed.yaml down
 echo "Done. Model $MODEL persisted under ./volumes/ollama/"
 ```
 
-### 3.3 常用模型
+### 3.3 Common Models
 
-| 模型 | 用途 | 大小 |
+| Model | Use | Size |
 |---|---|---|
-| `qwen2.5:14b-instruct` | 主力 NER 文本抽取 | ~9 GB |
-| `mistral-small3.1:latest` | 备用 NER，速度快 | ~12 GB |
-| `glm-ocr:latest` | OCR 视觉模型 | ~4 GB |
-| `llama3.2:latest` | 小备用 | ~2 GB |
+| `qwen2.5:14b-instruct` | Main NER text extraction | ~9 GB |
+| `mistral-small3.1:latest` | Faster fallback NER | ~12 GB |
+| `glm-ocr:latest` | OCR vision model | ~4 GB |
+| `llama3.2:latest` | Small fallback | ~2 GB |
 
-## 4. 客户端侧（shared.ollama_client）
+## 4. Client Side (`shared.ollama_client`)
 
-Runtime 形态下，其他容器访问 Ollama：
+In runtime mode, other containers access Ollama through:
+
 ```python
 # shared/config.py
-OLLAMA_URL = "http://ollama:11434/api/generate"    # 注意是 hostname `ollama`，不是 localhost
+OLLAMA_URL = "http://ollama:11434/api/generate"    # Hostname is `ollama`, not localhost
 ```
 
-`OllamaClient.wait_ready()` 必须在模块启动时被调用一次：LLM 容器起来太快、Ollama 还没加载完模型时会连不上，启动时要 block 等它好。
+`OllamaClient.wait_ready()` must be called once at module startup. LLM modules may start faster than Ollama can load the model, so startup should block until Ollama is ready.
 
-## 5. 独立验证脚本
+## 5. Independent Verification Script
 
-`scripts/verify_gateway.sh`：
+`scripts/verify_gateway.sh`:
+
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
 
-# 1. Ollama 在跑
+# 1. Ollama is running
 docker compose ps ollama | grep -q "Up" || { echo "FAIL: ollama not running"; exit 1; }
 
-# 2. 主机打不到
+# 2. The host cannot reach it
 curl -sS --max-time 3 http://127.0.0.1:11434/api/tags && { echo "FAIL: port is exposed!"; exit 1; } || echo "PASS: host cannot reach ollama"
 
-# 3. 内部打得到
+# 3. Internal containers can reach it
 docker run --rm --network llm-pipeline_llm_internal curlimages/curl -sS --max-time 10 http://ollama:11434/api/tags >/dev/null && echo "PASS: internal reachable" || { echo "FAIL: internal unreachable"; exit 1; }
 
-# 4. 白名单模型都在
+# 4. All allowlisted models are present
 REQUIRED=$(jq -r '.approved[]' config/approved_model_tags.json)
 AVAILABLE=$(docker run --rm --network llm-pipeline_llm_internal curlimages/curl -sS http://ollama:11434/api/tags | jq -r '.models[].name')
 for m in $REQUIRED; do
@@ -158,25 +166,25 @@ for m in $REQUIRED; do
 done
 ```
 
-CI 和发布前都应该跑这个脚本。
+Run this script in CI and before release.
 
-## 6. 故障排查速查
+## 6. Troubleshooting Quick Reference
 
-| 症状 | 原因 | 解决 |
+| Symptom | Cause | Fix |
 |---|---|---|
-| 所有 LLM 模块挂起 | Ollama 没 ready | 看 `docker logs ollama`；等 `start_period` |
-| `connection refused` | 用了错 URL | 确认是 `http://ollama:11434`，不是 localhost |
-| 主机能访问 11434 | `ports:` 没删干净 | 检查 compose.yaml，确认 runtime 服务没有 ports |
-| 模型找不到 | 没 seed | 跑 `scripts/seed_model.sh <model>` |
-| GPU 没用上 | `deploy.resources` 缺失或驱动没装 | `docker run --rm --gpus all nvidia/cuda:12.3.2-base-ubuntu22.04 nvidia-smi` |
+| All LLM modules hang | Ollama is not ready | Check `docker logs ollama`; wait through `start_period` |
+| `connection refused` | Wrong URL | Confirm it is `http://ollama:11434`, not localhost |
+| Host can access 11434 | `ports:` was not removed | Check compose.yaml and confirm the runtime service has no ports |
+| Model not found | Model was not seeded | Run `scripts/seed_model.sh <model>` |
+| GPU is not used | Missing `deploy.resources` or missing driver | Run `docker run --rm --gpus all nvidia/cuda:12.3.2-base-ubuntu22.04 nvidia-smi` |
 
-## 7. 构建检查清单
+## 7. Build Checklist
 
-- [ ] `compose.seed.yaml` 写好、能跑
-- [ ] `compose.yaml` 里 `ollama` 服务无 `ports:`
-- [ ] `internal: true` 网络定义了
-- [ ] healthcheck 配置
-- [ ] `scripts/seed_model.sh` 可执行
-- [ ] `scripts/verify_gateway.sh` 四项全通过
-- [ ] `config/approved_model_tags.json` 存在
-- [ ] README 里写清楚 "第一次用要先跑 seed"
+- [ ] `compose.seed.yaml` is complete and runnable.
+- [ ] The `ollama` service in `compose.yaml` has no `ports:`.
+- [ ] The `internal: true` network is defined.
+- [ ] Healthcheck is configured.
+- [ ] `scripts/seed_model.sh` is executable.
+- [ ] All four checks in `scripts/verify_gateway.sh` pass.
+- [ ] `config/approved_model_tags.json` exists.
+- [ ] README clearly states that seed must be run before first use.
