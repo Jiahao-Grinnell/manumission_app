@@ -1,0 +1,12 @@
+columns:
+  - page
+  - filename
+  - status
+  - named_people
+  - detail_rows
+  - place_rows
+  - model_calls
+  - repair_calls
+  - elapsed_seconds
+  - note
+

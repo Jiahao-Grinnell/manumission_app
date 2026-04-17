@@ -81,6 +81,10 @@ For detailed module specifications, see the corresponding files in the `docs/` d
 
 Build the system in the order described in [process.md](docs/process.md).
 
+### Running Locally
+
+See [running.md](docs/running.md) for Windows, Docker Desktop, WSL, and visual test UI instructions.
+
 ## Contributing
 
 Contributions are welcome. Please follow the build checklist for each module.

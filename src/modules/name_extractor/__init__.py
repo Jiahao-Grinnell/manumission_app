@@ -1,0 +1,2 @@
+"""Name extractor module."""
+

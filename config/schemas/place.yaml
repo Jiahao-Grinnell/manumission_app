@@ -1,0 +1,9 @@
+columns:
+  - Name
+  - Page
+  - Place
+  - Order
+  - Arrival Date
+  - Date Confidence
+  - Time Info
+

@@ -1,0 +1,10 @@
+columns:
+  - Name
+  - Page
+  - Report Type
+  - Crime Type
+  - Whether abuse
+  - Conflict Type
+  - Trial
+  - Amount paid
+

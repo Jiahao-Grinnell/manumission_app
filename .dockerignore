@@ -1,0 +1,24 @@
+# Git and local metadata
+.git
+.gitignore
+.dockerignore
+
+# Local data and model volumes
+*.pdf
+*.PDF
+data/
+volumes/
+
+# Python caches and environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+

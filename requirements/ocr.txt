@@ -1,0 +1,4 @@
+-r base.txt
+numpy>=1.26,<3
+opencv-python-headless>=4.8,<5
+
