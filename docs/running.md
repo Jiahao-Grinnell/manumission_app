@@ -9,7 +9,44 @@ This guide assumes:
 
 The application is built module by module. Early phases will not have every screen available yet. When a module is completed, its visual test UI should become reachable through the main Web UI or through its standalone Compose profile.
 
-## 1. Local Files and Large PDFs
+## 1. Open the Project Directory
+
+If you are in PowerShell, use the normal Windows path:
+
+```powershell
+cd C:\Users\dengjiahao\Desktop\manumission_app
+```
+
+If you enter WSL / Ubuntu first, use the Linux-mounted Windows path:
+
+```bash
+cd /mnt/c/Users/dengjiahao/Desktop/manumission_app
+```
+
+Do not use `C:\Users\...` inside WSL bash. Backslashes are treated as escape characters there, and the path will not resolve.
+
+You can also enter WSL directly in the project directory from PowerShell:
+
+```powershell
+wsl --cd C:\Users\dengjiahao\Desktop\manumission_app
+```
+
+Or convert the Windows path inside WSL:
+
+```bash
+cd "$(wslpath 'C:\Users\dengjiahao\Desktop\manumission_app')"
+```
+
+Confirm you are in the right place:
+
+```bash
+pwd
+ls
+```
+
+You should see files such as `README.md`, `docs`, `src`, `compose.yaml`, and `scripts`.
+
+## 2. Local Files and Large PDFs
 
 Do not commit input PDFs. The repo ignores `*.pdf`, `data/`, and `volumes/`.
 
@@ -29,9 +66,11 @@ data/
 
 For PDFs larger than the browser upload limit, put the file directly in `data/input_pdfs/` and register it from the `/inputs` page once the Web App module is available.
 
-## 2. First-Time Model Setup
+## 3. First-Time Model Setup
 
-Only this step needs internet access:
+Only this step needs internet access.
+
+Seed the text extraction model:
 
 ```bash
 ./scripts/seed_model.sh qwen2.5:14b-instruct
@@ -43,9 +82,102 @@ On Windows PowerShell, run the same through WSL if shell permissions are awkward
 wsl bash ./scripts/seed_model.sh qwen2.5:14b-instruct
 ```
 
+Seed the OCR vision model too:
+
+```bash
+./scripts/seed_model.sh glm-ocr:latest
+```
+
+From PowerShell:
+
+```powershell
+wsl bash ./scripts/seed_model.sh glm-ocr:latest
+```
+
 The model is stored under `volumes/ollama/`.
 
-## 3. Start the Runtime Stack
+## 4. Changing Models Later
+
+There are two model roles to think about:
+
+- **Text extraction model**: used by page classification, name extraction, metadata extraction, and place extraction. This is controlled by `OLLAMA_MODEL`.
+- **OCR vision model**: used by the OCR module. This is controlled by `OCR_MODEL` by default, and can also be overridden by the OCR module's `--model` argument once module 03 is implemented.
+
+To switch the text extraction model:
+
+1. Seed the new model once:
+
+   ```bash
+   ./scripts/seed_model.sh mistral-small3.1:latest
+   ```
+
+   From PowerShell through WSL:
+
+   ```powershell
+   wsl bash ./scripts/seed_model.sh mistral-small3.1:latest
+   ```
+
+2. Set the model in `.env`:
+
+   ```text
+   OLLAMA_MODEL=mistral-small3.1:latest
+   ```
+
+   If `.env` does not exist yet, copy `.env.example` first:
+
+   ```powershell
+   copy .env.example .env
+   ```
+
+3. Restart the runtime stack:
+
+   ```bash
+   docker compose down
+   docker compose up -d
+   ```
+
+4. Confirm the model exists inside runtime Ollama:
+
+   ```powershell
+   docker run --rm --network manumission_app_llm_internal curlimages/curl:latest -s http://ollama:11434/api/tags
+   ```
+
+5. Test a small generation call:
+
+   ```powershell
+   docker run --rm --network manumission_app_llm_internal manumission-base:phase1 `
+     python -c "from shared.ollama_client import OllamaClient; from shared.schemas import CallStats; c=OllamaClient(); s=CallStats(); print(c.generate('Reply with exactly OK.', s, num_predict=10)); print(s)"
+   ```
+
+To switch the OCR vision model, seed the vision model and pass that model to the OCR module when OCR is implemented:
+
+```bash
+./scripts/seed_model.sh glm-ocr:latest
+```
+
+Then set it in `.env`:
+
+```text
+OCR_MODEL=glm-ocr:latest
+```
+
+Example future OCR CLI shape:
+
+```bash
+python -m modules.ocr.cli \
+  --in_dir /data/pages/myDoc \
+  --out_dir /data/ocr_text/myDoc \
+  --model glm-ocr:latest
+```
+
+Important notes:
+
+- Seeding downloads the model into `volumes/ollama/`; it does not by itself change which model the app uses.
+- Changing `.env` changes the default model used by app containers after restart.
+- If you already have intermediate JSON from an older model, rerun the affected stages if you want outputs from the new model.
+- Keep model tags exact. `qwen2.5:14b-instruct` and `qwen2.5:latest` are different tags.
+
+## 5. Start the Runtime Stack
 
 After the model is seeded:
 
@@ -61,7 +193,7 @@ http://127.0.0.1:5000
 
 It is intentionally bound to localhost only.
 
-## 4. Visual Test Pages by Module
+## 6. Visual Test Pages by Module
 
 When the main Web App is complete, module UIs should be reachable from the navigation bar:
 
@@ -77,7 +209,7 @@ When the main Web App is complete, module UIs should be reachable from the navig
 | aggregator | `http://127.0.0.1:5000/aggregate/` | CSV preview, stats, downloads |
 | orchestrator | `http://127.0.0.1:5000/orchestrate/` | End-to-end dashboard, per-page status, log tail |
 
-## 5. Standalone Module UIs
+## 7. Standalone Module UIs
 
 During development, a module can also run as a standalone service once its Compose profile exists. The exact profile names may change as modules are implemented, but the pattern is:
 
@@ -99,7 +231,7 @@ Expected OCR page:
 http://127.0.0.1:5000/ocr/
 ```
 
-## 6. Running Tests
+## 8. Running Tests
 
 Phase 1.1 shared-library tests do not require Ollama:
 
@@ -110,7 +242,7 @@ docker run --rm manumission-base:phase1 python -m unittest discover -s /app/shar
 
 If you are running from PowerShell and Docker access is blocked by permissions, run the same commands from an elevated terminal or through WSL.
 
-## 7. Typical Development Loop
+## 9. Typical Development Loop
 
 1. Implement one module.
 2. Run that module's unit tests.
@@ -120,7 +252,7 @@ If you are running from PowerShell and Docker access is blocked by permissions, 
 6. Test on `sample input 1.pdf` or `sample input 2.pdf`.
 7. For milestone checks, test with `full input.pdf` or another large PDF and verify resume behavior.
 
-## 8. Useful Commands
+## 10. Useful Commands
 
 ```bash
 docker compose ps
@@ -130,7 +262,17 @@ docker compose -f compose.yaml config
 docker compose -f compose.seed.yaml --profile seed config
 ```
 
-## 9. Where Results Are Stored
+If `docker compose up -d` says the container name `/ollama` is already in use, an older container exists outside this Compose project. Current Compose files avoid fixed global container names, so first pull the latest local files and try again. If the error still appears, inspect and remove the old container:
+
+```bash
+docker ps -a --filter "name=ollama"
+docker rm -f ollama
+docker compose up -d
+```
+
+Only remove it if you are not intentionally using that old container for another project.
+
+## 11. Where Results Are Stored
 
 | Artifact | Path |
 |---|---|
@@ -141,4 +283,3 @@ docker compose -f compose.seed.yaml --profile seed config
 | Final CSVs | `data/output/<doc_id>/` |
 | Logs and job state | `data/logs/<doc_id>/` |
 | Optional prompt/response audit | `data/audit/<doc_id>/` |
-

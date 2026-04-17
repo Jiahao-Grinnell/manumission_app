@@ -26,6 +26,7 @@ class Settings:
     OLLAMA_URL: str = os.environ.get("OLLAMA_URL", "http://ollama:11434/api/generate")
     OLLAMA_BASE_URL: str = os.environ.get("OLLAMA_BASE_URL", "http://ollama:11434")
     OLLAMA_MODEL: str = os.environ.get("OLLAMA_MODEL", "qwen2.5:14b-instruct")
+    OCR_MODEL: str = os.environ.get("OCR_MODEL", "glm-ocr:latest")
     NUM_PREDICT: int = _int_env("OLLAMA_NUM_PREDICT", 1200)
     NUM_CTX: int | None = _optional_int(os.environ.get("OLLAMA_NUM_CTX"))
     OLLAMA_CONNECT_TIMEOUT: int = _int_env("OLLAMA_CONNECT_TIMEOUT", 10)
@@ -65,4 +66,3 @@ class Settings:
 
 
 settings = Settings()
-
