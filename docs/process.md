@@ -66,10 +66,11 @@ pytest src/shared/tests/
 
 This module is the Ollama container itself plus documented usage of `OllamaClient`. It does not need new Python code. Write:
 
-- Full `ollama` service definition in `compose.yaml`, including GPU, internal network, no ports, non-root user, and capability dropping.
+- Full `ollama` service definition in `compose.yaml`, including GPU by default, internal network, no ports, non-root user, capability dropping, and a read-only model volume.
+- GPU verification for Docker Desktop / WSL, because the target workstation uses an NVIDIA GPU.
 - `ollama_seed` service in `compose.seed.yaml`, temporarily bound to `127.0.0.1:11434` for model download.
 - `scripts/seed_model.sh` to pull a model.
-- Health check using `GET /api/version`.
+- Runtime health check using the Ollama CLI, plus independent CUDA-log and internal-network `GET /api/version` verification.
 
 Verification:
 
@@ -77,7 +78,7 @@ Verification:
 ./scripts/seed_model.sh qwen2.5:14b-instruct
 docker compose up -d ollama
 # Verify internal reachability and host isolation.
-docker run --rm --network llm-pipeline_llm_internal curlimages/curl http://ollama:11434/api/version
+docker run --rm --network manumission_app_llm_internal curlimages/curl http://ollama:11434/api/version
 curl http://127.0.0.1:11434/api/tags   # Should be connection refused
 ```
 

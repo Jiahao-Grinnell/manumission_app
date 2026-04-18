@@ -28,7 +28,7 @@ The system consists of the following modules:
 ### Prerequisites
 
 - Docker and Docker Compose
-- GPU for Ollama (optional but recommended)
+- NVIDIA GPU available to Docker Desktop / WSL for Ollama
 
 ### Installation Steps
 
@@ -48,7 +48,12 @@ The system consists of the following modules:
    docker compose up -d
    ```
 
-4. Open the browser at http://127.0.0.1:5000
+4. During Phase 1.2, verify Ollama with:
+   ```bash
+   bash scripts/verify_gateway.sh
+   ```
+
+The browser URL `http://127.0.0.1:5000` becomes available after the Web App module is implemented.
 
 ## Usage
 

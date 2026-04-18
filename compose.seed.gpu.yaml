@@ -1,0 +1,3 @@
+services:
+  ollama_seed:
+    gpus: all

@@ -1,8 +1,11 @@
 {
+  "required": [
+    "qwen2.5:14b-instruct",
+    "glm-ocr:latest"
+  ],
   "approved": [
     "qwen2.5:14b-instruct",
     "mistral-small3.1:latest",
     "glm-ocr:latest"
   ]
 }
-

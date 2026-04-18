@@ -1,278 +1,671 @@
 # Running the Project on Windows
 
-This guide assumes:
+This guide is written for this machine setup:
 
-- You are on Windows.
-- Docker Desktop is installed and running.
-- Ubuntu for Windows / WSL is installed.
-- This repository is checked out on your Windows filesystem.
+- Windows host
+- Docker Desktop installed and running
+- Ubuntu / WSL installed
+- NVIDIA GPU available to WSL and Docker
+- Repository path: `C:\Users\dengjiahao\Desktop\manumission_app`
 
-The application is built module by module. Early phases will not have every screen available yet. When a module is completed, its visual test UI should become reachable through the main Web UI or through its standalone Compose profile.
+GPU is the default path. You do not need to add `compose.gpu.yaml` or set `OLLAMA_USE_GPU=1` anymore. A normal `docker compose up -d ollama` starts Ollama with GPU access.
 
-## 1. Open the Project Directory
+## 1. What Works Right Now
 
-If you are in PowerShell, use the normal Windows path:
+The project is being built phase by phase. Do not expect every URL to work yet.
 
-```powershell
-cd C:\Users\dengjiahao\Desktop\manumission_app
+Current completed runtime target:
+
+```text
+M1 / Phase 1.2: Ollama gateway
 ```
 
-If you enter WSL / Ubuntu first, use the Linux-mounted Windows path:
+Available now:
+
+- Ollama runs in Docker.
+- Ollama uses the NVIDIA GPU by default.
+- Ollama is reachable only from Docker's internal network.
+- The host cannot reach runtime Ollama at `127.0.0.1:11434`.
+- Required models are stored under `volumes/ollama/`.
+
+Not available yet:
+
+- `http://127.0.0.1:5000/`
+- Main Web App
+- Upload page
+- Dashboard
+- Module visual pages
+
+`http://127.0.0.1:5000/` becomes available after M6 / Phase 6, when the `web_app` service is implemented and added to Compose. During M1, port 5000 is expected to fail.
+
+## 2. Open the Project
+
+Recommended: use WSL for shell commands.
+
+From PowerShell:
+
+```powershell
+wsl
+```
+
+Then in WSL:
 
 ```bash
 cd /mnt/c/Users/dengjiahao/Desktop/manumission_app
 ```
 
-Do not use `C:\Users\...` inside WSL bash. Backslashes are treated as escape characters there, and the path will not resolve.
-
-You can also enter WSL directly in the project directory from PowerShell:
-
-```powershell
-wsl --cd C:\Users\dengjiahao\Desktop\manumission_app
-```
-
-Or convert the Windows path inside WSL:
-
-```bash
-cd "$(wslpath 'C:\Users\dengjiahao\Desktop\manumission_app')"
-```
-
-Confirm you are in the right place:
+Confirm the location:
 
 ```bash
 pwd
 ls
 ```
 
-You should see files such as `README.md`, `docs`, `src`, `compose.yaml`, and `scripts`.
-
-## 2. Local Files and Large PDFs
-
-Do not commit input PDFs. The repo ignores `*.pdf`, `data/`, and `volumes/`.
-
-Recommended layout for large inputs:
+You should see:
 
 ```text
-data/
-  input_pdfs/
-    my_large_document.pdf
-  pages/
-  ocr_text/
-  intermediate/
-  output/
-  logs/
-  audit/
+README.md
+compose.yaml
+docs
+scripts
+src
 ```
 
-For PDFs larger than the browser upload limit, put the file directly in `data/input_pdfs/` and register it from the `/inputs` page once the Web App module is available.
+Do not run this inside WSL:
 
-## 3. First-Time Model Setup
+```bash
+cd C:\Users\dengjiahao\Desktop\manumission_app
+```
 
-Only this step needs internet access.
+That is a Windows path. Inside WSL, use:
 
-Seed the text extraction model:
+```bash
+cd /mnt/c/Users/dengjiahao/Desktop/manumission_app
+```
+
+PowerShell-only alternative:
+
+```powershell
+cd C:\Users\dengjiahao\Desktop\manumission_app
+```
+
+## 3. Check Docker and GPU
+
+Start Docker Desktop first.
+
+In WSL, confirm Docker is reachable:
+
+```bash
+docker version
+docker compose version
+```
+
+Confirm WSL can see the GPU:
+
+```bash
+nvidia-smi
+```
+
+Optional Docker Hub GPU image check:
+
+```bash
+docker run --rm --gpus all nvidia/cuda:12.3.2-base-ubuntu22.04 nvidia-smi
+```
+
+Expected result: the command prints your NVIDIA GPU. On this machine it should show the RTX 5000 Ada GPU.
+
+If this fails with `error getting credentials`, that is a Docker Hub credential-helper problem, not necessarily a GPU problem. Continue with the project-specific GPU check in section 8, or fix the Docker credential config using the troubleshooting section below.
+
+## 4. Prepare Local Folders
+
+These folders are ignored by git and are safe for local data:
+
+```bash
+mkdir -p data/input_pdfs
+mkdir -p data/pages
+mkdir -p data/ocr_text
+mkdir -p data/intermediate
+mkdir -p data/output
+mkdir -p data/logs
+mkdir -p data/audit
+mkdir -p volumes/ollama
+```
+
+Do not commit PDFs. The repo ignores:
+
+```text
+*.pdf
+data/
+volumes/
+```
+
+Recommended input layout:
+
+```text
+data/input_pdfs/
+  my_document.pdf
+data/pages/
+data/ocr_text/
+data/intermediate/
+data/output/
+data/logs/
+data/audit/
+```
+
+Large PDFs should be placed directly in `data/input_pdfs/`. Do not rely on browser upload for files larger than hundreds of MB.
+
+## 5. Configure Environment
+
+Create `.env` once if it does not exist:
+
+```bash
+cp .env.example .env
+```
+
+Important model settings:
+
+```text
+OLLAMA_MODEL=qwen2.5:14b-instruct
+OCR_MODEL=glm-ocr:latest
+```
+
+Roles:
+
+- `OLLAMA_MODEL`: text extraction model for classifier and NER modules.
+- `OCR_MODEL`: vision model for OCR.
+
+Changing `.env` changes which model the app will use after containers restart. It does not download the model. Downloading is done by `scripts/seed_model.sh`.
+
+## 6. Download Models
+
+This step needs internet access. It downloads models into `volumes/ollama/`.
+
+Download the text extraction model:
 
 ```bash
 ./scripts/seed_model.sh qwen2.5:14b-instruct
 ```
 
-On Windows PowerShell, run the same through WSL if shell permissions are awkward:
-
-```powershell
-wsl bash ./scripts/seed_model.sh qwen2.5:14b-instruct
-```
-
-Seed the OCR vision model too:
+Download the OCR vision model:
 
 ```bash
 ./scripts/seed_model.sh glm-ocr:latest
+```
+
+If WSL says the script is not executable:
+
+```bash
+bash scripts/seed_model.sh qwen2.5:14b-instruct
+bash scripts/seed_model.sh glm-ocr:latest
 ```
 
 From PowerShell:
 
 ```powershell
+wsl bash ./scripts/seed_model.sh qwen2.5:14b-instruct
 wsl bash ./scripts/seed_model.sh glm-ocr:latest
 ```
 
-The model is stored under `volumes/ollama/`.
+Notes:
 
-## 4. Changing Models Later
+- Seed mode temporarily exposes Ollama at `127.0.0.1:11434` only.
+- Seed mode uses GPU by default.
+- Runtime mode later mounts the model folder read-only.
+- If a model is already downloaded, Ollama will reuse it.
 
-There are two model roles to think about:
+## 7. Start Ollama Runtime
 
-- **Text extraction model**: used by page classification, name extraction, metadata extraction, and place extraction. This is controlled by `OLLAMA_MODEL`.
-- **OCR vision model**: used by the OCR module. This is controlled by `OCR_MODEL` by default, and can also be overridden by the OCR module's `--model` argument once module 03 is implemented.
+Start the gateway:
+
+```bash
+docker compose up -d ollama
+```
+
+Check status:
+
+```bash
+docker compose ps ollama
+```
+
+Expected:
+
+```text
+manumission_app-ollama-1   Up ... (healthy)
+```
+
+Follow logs:
+
+```bash
+docker compose logs -f ollama
+```
+
+The logs should include CUDA detection, similar to:
+
+```text
+library=CUDA
+NVIDIA RTX 5000 Ada Generation Laptop GPU
+```
+
+## 8. Verify the Gateway
+
+Run the full gateway check:
+
+```bash
+bash scripts/verify_gateway.sh
+```
+
+The script checks:
+
+- runtime Compose syntax
+- seed Compose syntax
+- Ollama container status
+- Docker GPU device request
+- tiny generation through the same HTTP API the app will use
+- GPU placement through `ollama ps`
+- host isolation
+- internal Docker network reachability
+- required model presence
+
+Expected success output includes:
+
+```text
+PASS: Docker GPU device request is present
+PASS: tiny HTTP generation returned a response
+PASS: Ollama model is running on GPU
+PASS: host cannot reach runtime Ollama
+{"version":"0.16.2"}
+PASS: all required models are present
+Gateway verification complete.
+```
+
+The first run can take several minutes because `qwen2.5:14b-instruct` has to load into GPU memory. If the model load or generation hangs, the script fails after `VERIFY_GENERATE_TIMEOUT`, which defaults to 900 seconds.
+
+Host isolation check:
+
+```bash
+curl http://127.0.0.1:11434/api/tags
+```
+
+During runtime, this should fail. That is correct. Runtime Ollama is intentionally not exposed to the host.
+
+Internal Docker check:
+
+```bash
+docker run --rm --network manumission_app_llm_internal curlimages/curl:latest \
+  -s http://ollama:11434/api/version
+```
+
+Expected:
+
+```json
+{"version":"0.16.2"}
+```
+
+## 9. Verify a Real Model Call
+
+Run a small text generation through the project client:
+
+If the `manumission-base:phase1` image does not exist yet, build it first:
+
+```bash
+docker build -f docker/base.Dockerfile -t manumission-base:phase1 .
+```
+
+```bash
+docker run --rm \
+  --network manumission_app_llm_internal \
+  -e PYTHONPATH=/app/src \
+  -v "$(pwd)":/app \
+  -w /app \
+  manumission-base:phase1 \
+  python -c "from shared.ollama_client import OllamaClient; from shared.schemas import CallStats; c=OllamaClient(model='qwen2.5:14b-instruct'); s=CallStats(); print(c.generate('Reply with exactly OK.', s, num_predict=10)); print(s)"
+```
+
+Expected:
+
+```text
+OK
+model_calls=1 repair_calls=0
+```
+
+Then confirm the model is on GPU:
+
+```bash
+docker compose exec -T ollama ollama ps
+```
+
+Expected `PROCESSOR`:
+
+```text
+100% GPU
+```
+
+The first model call can take a few minutes because the model must load into VRAM. Later calls are faster while the model remains loaded.
+
+## 10. Start the Full App Later
+
+When M6 / Phase 6 is implemented, the full app start command will be:
+
+```bash
+docker compose up -d
+```
+
+Then open:
+
+```text
+http://127.0.0.1:5000/
+```
+
+For now, this URL does not work because there is no `web_app` service in `compose.yaml`.
+
+## 11. Phase 2.1 PDF Ingest Testing Later
+
+After Phase 2.1 is implemented, `pdf_ingest` should have both CLI tests and a visual test UI.
+
+Expected CLI shape:
+
+```bash
+docker compose run --rm pdf_ingest python -m modules.pdf_ingest.cli \
+  --pdf /data/input_pdfs/sample_input_1.pdf \
+  --doc-id sample_input_1 \
+  --dpi 200 \
+  --out /data/pages
+```
+
+Expected output folder:
+
+```text
+data/pages/sample_input_1/
+  manifest.json
+  p001.png
+  p002.png
+  ...
+```
+
+Expected visual UI:
+
+```text
+http://127.0.0.1:5102/ingest/
+```
+
+The UI should show:
+
+- upload/register form
+- manifest summary
+- page count
+- DPI
+- completed pages
+- thumbnail grid
+- click-to-open original page image
+- resume status for partial large-PDF ingest
+
+This UI is not available yet. It should be built together with Phase 2.1.
+
+## 12. Future Main Web UI Routes
+
+After M6 / Phase 6, the main Web App should expose these local routes:
+
+| Module | URL | Purpose |
+|---|---|---|
+| Home | `http://127.0.0.1:5000/` | Dashboard |
+| Inputs | `http://127.0.0.1:5000/inputs` | Register large local PDFs |
+| Upload | `http://127.0.0.1:5000/upload` | Browser PDF upload |
+| Jobs | `http://127.0.0.1:5000/jobs` | Job history |
+| PDF ingest | `http://127.0.0.1:5000/ingest/` | Page thumbnails and manifest |
+| OCR | `http://127.0.0.1:5000/ocr/` | OCR preprocessing and text output |
+| Classifier | `http://127.0.0.1:5000/classify/` | Extract/skip decision |
+| Names | `http://127.0.0.1:5000/names/` | Name extraction review |
+| Metadata | `http://127.0.0.1:5000/meta/` | Per-person metadata |
+| Places | `http://127.0.0.1:5000/places/` | Place route extraction |
+| Normalizer | `http://127.0.0.1:5000/normalizer/` | Rule playground |
+| Aggregator | `http://127.0.0.1:5000/aggregate/` | CSV preview and download |
+
+These routes are future targets, not current Phase 1.2 behavior.
+
+## 13. Running Tests
+
+Shared-library tests:
+
+```bash
+docker build -f docker/base.Dockerfile -t manumission-base:phase1 .
+docker run --rm \
+  -e PYTHONPATH=/app/src \
+  -v "$(pwd)":/app \
+  -w /app \
+  manumission-base:phase1 \
+  python -m unittest discover -s src/shared/tests -p "test_*.py"
+```
+
+Expected:
+
+```text
+Ran 21 tests
+OK
+```
+
+Future module tests should follow this pattern:
+
+```bash
+docker compose run --rm <module_service> python -m unittest discover -s src/modules/<module>/tests -p "test_*.py"
+```
+
+## 14. Changing Models Later
 
 To switch the text extraction model:
 
-1. Seed the new model once:
+1. Download the new model:
 
    ```bash
    ./scripts/seed_model.sh mistral-small3.1:latest
    ```
 
-   From PowerShell through WSL:
-
-   ```powershell
-   wsl bash ./scripts/seed_model.sh mistral-small3.1:latest
-   ```
-
-2. Set the model in `.env`:
+2. Edit `.env`:
 
    ```text
    OLLAMA_MODEL=mistral-small3.1:latest
    ```
 
-   If `.env` does not exist yet, copy `.env.example` first:
-
-   ```powershell
-   copy .env.example .env
-   ```
-
-3. Restart the runtime stack:
+3. Restart relevant containers:
 
    ```bash
    docker compose down
-   docker compose up -d
+   docker compose up -d ollama
    ```
 
-4. Confirm the model exists inside runtime Ollama:
+4. Verify:
 
-   ```powershell
-   docker run --rm --network manumission_app_llm_internal curlimages/curl:latest -s http://ollama:11434/api/tags
+   ```bash
+   bash scripts/verify_gateway.sh
    ```
 
-5. Test a small generation call:
+To switch the OCR model:
 
-   ```powershell
-   docker run --rm --network manumission_app_llm_internal manumission-base:phase1 `
-     python -c "from shared.ollama_client import OllamaClient; from shared.schemas import CallStats; c=OllamaClient(); s=CallStats(); print(c.generate('Reply with exactly OK.', s, num_predict=10)); print(s)"
+1. Download the model:
+
+   ```bash
+   ./scripts/seed_model.sh glm-ocr:latest
    ```
 
-To switch the OCR vision model, seed the vision model and pass that model to the OCR module when OCR is implemented:
+2. Edit `.env`:
+
+   ```text
+   OCR_MODEL=glm-ocr:latest
+   ```
+
+3. Restart relevant containers.
+
+Keep model tags exact. `qwen2.5:14b-instruct` and `qwen2.5:latest` are different models.
+
+## 15. Useful Commands
+
+Start GPU Ollama:
 
 ```bash
-./scripts/seed_model.sh glm-ocr:latest
+docker compose up -d ollama
 ```
 
-Then set it in `.env`:
-
-```text
-OCR_MODEL=glm-ocr:latest
-```
-
-Example future OCR CLI shape:
+Stop everything:
 
 ```bash
-python -m modules.ocr.cli \
-  --in_dir /data/pages/myDoc \
-  --out_dir /data/ocr_text/myDoc \
-  --model glm-ocr:latest
+docker compose down
 ```
 
-Important notes:
-
-- Seeding downloads the model into `volumes/ollama/`; it does not by itself change which model the app uses.
-- Changing `.env` changes the default model used by app containers after restart.
-- If you already have intermediate JSON from an older model, rerun the affected stages if you want outputs from the new model.
-- Keep model tags exact. `qwen2.5:14b-instruct` and `qwen2.5:latest` are different tags.
-
-## 5. Start the Runtime Stack
-
-After the model is seeded:
-
-```bash
-docker compose up -d
-```
-
-The main app, once module 11 is implemented, will be available at:
-
-```text
-http://127.0.0.1:5000
-```
-
-It is intentionally bound to localhost only.
-
-## 6. Visual Test Pages by Module
-
-When the main Web App is complete, module UIs should be reachable from the navigation bar:
-
-| Module | URL | What You Should See |
-|---|---|---|
-| pdf_ingest | `http://127.0.0.1:5000/ingest/` | Upload/register PDF, page thumbnails, manifest |
-| ocr | `http://127.0.0.1:5000/ocr/` | Page picker, preprocessing strip, OCR text, raw model responses |
-| page_classifier | `http://127.0.0.1:5000/classify/` | OCR text, extract/skip verdict, report type, evidence |
-| name_extractor | `http://127.0.0.1:5000/names/` | Multi-pass name extraction, highlights, dropped-candidate reasons |
-| metadata_extractor | `http://127.0.0.1:5000/meta/` | Per-person case metadata fields and evidence |
-| place_extractor | `http://127.0.0.1:5000/places/` | Ordered place route, dates, confidence, evidence |
-| normalizer | `http://127.0.0.1:5000/normalizer/` | Name/place/date normalization playground |
-| aggregator | `http://127.0.0.1:5000/aggregate/` | CSV preview, stats, downloads |
-| orchestrator | `http://127.0.0.1:5000/orchestrate/` | End-to-end dashboard, per-page status, log tail |
-
-## 7. Standalone Module UIs
-
-During development, a module can also run as a standalone service once its Compose profile exists. The exact profile names may change as modules are implemented, but the pattern is:
-
-```bash
-docker compose --profile standalone up -d ollama <module_service>
-```
-
-Then open the module through the configured local route or the main `web_app` proxy.
-
-For example, after OCR is implemented:
-
-```bash
-docker compose --profile standalone up -d ollama ocr
-```
-
-Expected OCR page:
-
-```text
-http://127.0.0.1:5000/ocr/
-```
-
-## 8. Running Tests
-
-Phase 1.1 shared-library tests do not require Ollama:
-
-```bash
-docker build -f docker/base.Dockerfile -t manumission-base:phase1 .
-docker run --rm manumission-base:phase1 python -m unittest discover -s /app/shared/tests -p "test_*.py"
-```
-
-If you are running from PowerShell and Docker access is blocked by permissions, run the same commands from an elevated terminal or through WSL.
-
-## 9. Typical Development Loop
-
-1. Implement one module.
-2. Run that module's unit tests.
-3. Start Docker services for that module.
-4. Open the module's visual test UI.
-5. Test on a tiny fixture first.
-6. Test on `sample input 1.pdf` or `sample input 2.pdf`.
-7. For milestone checks, test with `full input.pdf` or another large PDF and verify resume behavior.
-
-## 10. Useful Commands
+Show services:
 
 ```bash
 docker compose ps
+```
+
+Show Ollama logs:
+
+```bash
 docker compose logs -f ollama
-docker compose down
+```
+
+Show downloaded models:
+
+```bash
+docker compose exec -T ollama ollama list
+```
+
+Show loaded models and GPU/CPU placement:
+
+```bash
+docker compose exec -T ollama ollama ps
+```
+
+Validate Compose:
+
+```bash
 docker compose -f compose.yaml config
 docker compose -f compose.seed.yaml --profile seed config
 ```
 
-If `docker compose up -d` says the container name `/ollama` is already in use, an older container exists outside this Compose project. Current Compose files avoid fixed global container names, so first pull the latest local files and try again. If the error still appears, inspect and remove the old container:
+Run gateway verification:
+
+```bash
+bash scripts/verify_gateway.sh
+```
+
+## 16. Troubleshooting
+
+### `docker compose up -d ollama` fails with a GPU error
+
+Check Docker GPU support:
+
+```bash
+docker run --rm --gpus all nvidia/cuda:12.3.2-base-ubuntu22.04 nvidia-smi
+```
+
+If this fails, restart Docker Desktop and WSL. Then retry.
+
+### `docker run --rm --gpus all nvidia/cuda:... nvidia-smi` fails with `error getting credentials`
+
+This means Docker in WSL could not use its configured Docker Hub credential helper. It usually happens before the image is downloaded, so it does not prove that GPU is broken.
+
+Check your WSL Docker config:
+
+```bash
+cat ~/.docker/config.json
+```
+
+If it contains this:
+
+```json
+{
+  "credsStore": "desktop.exe"
+}
+```
+
+then WSL is trying to call Docker Desktop's credential helper and that helper is failing. For public images, you can remove that setting:
+
+```bash
+cp ~/.docker/config.json ~/.docker/config.json.bak
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+path = Path.home() / ".docker" / "config.json"
+data = json.loads(path.read_text(encoding="utf-8"))
+data.pop("credsStore", None)
+data.pop("credHelpers", None)
+path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+PY
+```
+
+Then retry:
+
+```bash
+docker run --rm --gpus all nvidia/cuda:12.3.2-base-ubuntu22.04 nvidia-smi
+```
+
+This changes only your WSL Docker client config. If you rely on Docker Desktop login for private registries, sign in again later from Docker Desktop.
+
+### `curl http://127.0.0.1:11434/api/tags` fails
+
+This is expected during runtime. Runtime Ollama has no host port.
+
+Use the internal Docker check instead:
+
+```bash
+docker run --rm --network manumission_app_llm_internal curlimages/curl:latest \
+  -s http://ollama:11434/api/version
+```
+
+### `http://127.0.0.1:5000/` fails
+
+This is expected until M6 / Phase 6. The `web_app` service does not exist yet.
+
+### Container name `/ollama` is already in use
+
+An old global container exists outside this Compose project.
+
+Inspect:
 
 ```bash
 docker ps -a --filter "name=ollama"
-docker rm -f ollama
-docker compose up -d
 ```
 
-Only remove it if you are not intentionally using that old container for another project.
+Remove it only if it is not used by another project:
 
-## 11. Where Results Are Stored
+```bash
+docker rm -f ollama
+```
+
+Then start this project again:
+
+```bash
+docker compose up -d ollama
+```
+
+### First model call is very slow
+
+Normal. The model is loading into GPU memory. On the tested RTX 5000 Ada setup, the first `qwen2.5:14b-instruct` call can take a couple of minutes.
+
+If `bash scripts/verify_gateway.sh` appears stuck at model generation, check Task Manager or run this in another terminal:
+
+```bash
+docker compose exec -T ollama ollama ps
+docker compose logs --tail=120 ollama
+```
+
+During a healthy first load, the logs should eventually show `offloaded ... layers to GPU`, and `ollama ps` should show `100% GPU`.
+
+### GPU memory pressure
+
+The runtime is intentionally conservative:
+
+```text
+OLLAMA_MAX_LOADED_MODELS=1
+OLLAMA_NUM_PARALLEL=1
+OLLAMA_CONTEXT_LENGTH=4096
+OLLAMA_KEEP_ALIVE=2m
+OLLAMA_LOAD_TIMEOUT=10m
+```
+
+This avoids keeping the text model and OCR model in VRAM at the same time on a 16 GB GPU.
+
+## 17. Artifact Locations
 
 | Artifact | Path |
 |---|---|
@@ -282,4 +675,4 @@ Only remove it if you are not intentionally using that old container for another
 | Intermediate JSON | `data/intermediate/<doc_id>/` |
 | Final CSVs | `data/output/<doc_id>/` |
 | Logs and job state | `data/logs/<doc_id>/` |
-| Optional prompt/response audit | `data/audit/<doc_id>/` |
+| Prompt/response audit | `data/audit/<doc_id>/` |

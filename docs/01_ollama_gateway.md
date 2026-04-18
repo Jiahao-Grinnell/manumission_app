@@ -1,75 +1,45 @@
 # Module 01 - ollama_gateway
 
-> The Ollama container itself plus its runtime network contract. This is an infrastructure module and contains no Python business code.
+> The Ollama container and its runtime network contract. This is an infrastructure module and contains no Python business code.
 
 ## 1. Purpose
 
-Among all modules, **only this one** requires a GPU, uses a large amount of memory (a 14B model uses about 9 GB VRAM), and acts as a **shared dependency**. It is isolated as a gateway so every other module can call it over the internal network.
+This module isolates the local LLM server behind Docker Compose. Other modules call Ollama through the internal Docker hostname `ollama`, while the Windows host cannot reach the runtime Ollama port directly.
 
-The "code" for this module is mainly **Compose definitions, Docker parameters, and runtime scripts**. It does not add Python code.
+The module is made of Compose files, model seeding scripts, model allowlists, and verification commands.
 
-## 2. Two Deployment Modes
+## 2. Deployment Modes
 
-### 2.1 Seed Mode (temporary internet access for model download)
+### 2.1 Runtime Mode
 
-`compose.seed.yaml`:
-
-```yaml
-services:
-  ollama_seed:
-    image: ollama/ollama:latest
-    container_name: ollama_seed
-    environment:
-      - OLLAMA_HOST=0.0.0.0:11434
-      - OLLAMA_NO_CLOUD=1
-      - HOME=/home/ollama
-    user: "10001:10001"
-    volumes:
-      - ./volumes/ollama:/home/ollama/.ollama
-    ports:
-      - "127.0.0.1:11434:11434"    # Bind localhost only
-    deploy:
-      resources:
-        reservations:
-          devices: [{ capabilities: [gpu] }]
-    security_opt: [ no-new-privileges:true ]
-    cap_drop: [ ALL ]
-```
-
-Key points:
-
-- `127.0.0.1:11434` binds localhost, not `0.0.0.0`, so LAN and public networks cannot reach it.
-- This Compose file is used **only while downloading models**. Shut it down immediately afterward.
-- Model files persist under `./volumes/ollama/`, and runtime mode mounts that volume.
-
-### 2.2 Runtime Mode (offline operation)
-
-The `ollama` service in `compose.yaml`:
+`compose.yaml` runs the normal offline service:
 
 ```yaml
 services:
   ollama:
     image: ollama/ollama:latest
-    container_name: ollama
+    gpus: all
     environment:
-      - OLLAMA_HOST=0.0.0.0:11434
-      - OLLAMA_NO_CLOUD=1
-      - HOME=/home/ollama
+      OLLAMA_HOST: 0.0.0.0:11434
+      OLLAMA_NO_CLOUD: "1"
+      OLLAMA_CONTEXT_LENGTH: "4096"
+      OLLAMA_KEEP_ALIVE: 2m
+      OLLAMA_LOAD_TIMEOUT: 10m
+      OLLAMA_MAX_LOADED_MODELS: "1"
+      OLLAMA_NUM_PARALLEL: "1"
+      HOME: /home/ollama
     user: "10001:10001"
     volumes:
-      - ./volumes/ollama:/home/ollama/.ollama:ro   # Read-only; models cannot be changed
+      - ./volumes/ollama:/home/ollama/.ollama:ro
     networks:
-      - llm_internal                                # Internal network only
-    # Note: no ports: field
+      - llm_internal
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     restart: unless-stopped
-    deploy:
-      resources:
-        reservations:
-          devices: [{ capabilities: [gpu] }]
-    security_opt: [ no-new-privileges:true ]
-    cap_drop: [ ALL ]
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:11434/api/version || exit 1"]
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 30
@@ -77,26 +47,89 @@ services:
 
 networks:
   llm_internal:
-    internal: true      # Critical: no internet egress
+    internal: true
+  llm_frontend:
+    driver: bridge
 ```
 
 Key points:
 
-- There is **no `ports:` field**, so the host cannot reach Ollama directly.
-- `internal: true` prevents containers on this network from reaching the internet.
-- The volume is mounted `:ro`, so runtime cannot modify model files.
-- The healthcheck lets Compose know when Ollama is ready.
+- Runtime mode has no `ports:` field, so `127.0.0.1:11434` should fail from the host.
+- `llm_internal` is marked `internal: true`, so runtime LLM traffic stays inside Docker.
+- The model volume is mounted read-only in runtime mode.
+- The official Ollama image does not include `curl` or `wget`, so the Docker healthcheck uses `ollama list`. The verification script still checks `GET /api/version` from a separate container on the internal network.
+- Runtime limits keep a 16 GB GPU stable by allowing one loaded model and one request at a time. This matters because the text model and OCR model should not compete for VRAM.
+
+### 2.2 Seed Mode
+
+`compose.seed.yaml` is used only while downloading models:
+
+```yaml
+services:
+  ollama_seed:
+    image: ollama/ollama:latest
+    gpus: all
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+      OLLAMA_NO_CLOUD: "1"
+      HOME: /home/ollama
+    user: "10001:10001"
+    volumes:
+      - ./volumes/ollama:/home/ollama/.ollama
+    ports:
+      - "127.0.0.1:11434:11434"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: "no"
+    profiles:
+      - seed
+```
+
+Key points:
+
+- Seed mode binds only to `127.0.0.1`, not the LAN.
+- Seed mode mounts the model volume read-write.
+- Seed mode uses GPU by default.
+- Stop seed mode after downloads. Runtime mode will later mount the same model files read-only.
+
+### 2.3 GPU Default
+
+The default Compose path uses GPU:
+
+```bash
+docker compose up -d ollama
+```
+
+`compose.gpu.yaml` and `compose.seed.gpu.yaml` are legacy compatibility files from the earlier optional-GPU setup. They are no longer required for normal use.
+
+Verify Docker can expose the GPU before running the gateway:
+
+```bash
+docker run --rm --gpus all nvidia/cuda:12.3.2-base-ubuntu22.04 nvidia-smi
+```
+
+The gateway verification script also checks Ollama logs for CUDA detection:
+
+```bash
+bash scripts/verify_gateway.sh
+```
+
+If Docker reports that no GPU device driver exists, fix Docker Desktop / WSL GPU integration before continuing.
 
 ## 3. Model Management
 
-### 3.1 Approved Model List
+### 3.1 Required and Approved Models
 
-Maintain `config/approved_model_tags.json` manually as an allowlist of permitted models. After `OllamaClient.wait_ready()`, runtime code may optionally verify that the models in Ollama are in this allowlist.
-
-Example:
+Maintain `config/approved_model_tags.json` manually:
 
 ```json
 {
+  "required": [
+    "qwen2.5:14b-instruct",
+    "glm-ocr:latest"
+  ],
   "approved": [
     "qwen2.5:14b-instruct",
     "mistral-small3.1:latest",
@@ -105,86 +138,74 @@ Example:
 }
 ```
 
+`required` lists models that must be present for the current pipeline. `approved` lists models that are allowed for future switching or fallback.
+
 ### 3.2 Download Script
 
-`scripts/seed_model.sh`:
+Download one model at a time:
 
 ```bash
-#!/usr/bin/env bash
-set -euo pipefail
-MODEL="${1:?usage: seed_model.sh <model-tag>}"
-
-docker compose -f compose.seed.yaml up -d
-docker exec -i ollama_seed ollama pull "$MODEL"
-curl -s http://127.0.0.1:11434/api/tags > config/approved_model_tags.json
-docker compose -f compose.seed.yaml down
-echo "Done. Model $MODEL persisted under ./volumes/ollama/"
+./scripts/seed_model.sh qwen2.5:14b-instruct
+./scripts/seed_model.sh glm-ocr:latest
 ```
 
-### 3.3 Common Models
+The script stops runtime Ollama, starts seed mode, pulls the model, prints `ollama list`, shuts seed mode down, and leaves the model files under `volumes/ollama/`.
 
-| Model | Use | Size |
-|---|---|---|
-| `qwen2.5:14b-instruct` | Main NER text extraction | ~9 GB |
-| `mistral-small3.1:latest` | Faster fallback NER | ~12 GB |
-| `glm-ocr:latest` | OCR vision model | ~4 GB |
-| `llama3.2:latest` | Small fallback | ~2 GB |
+## 4. Client Contract
 
-## 4. Client Side (`shared.ollama_client`)
-
-In runtime mode, other containers access Ollama through:
+Runtime clients must use the Docker service hostname:
 
 ```python
-# shared/config.py
-OLLAMA_URL = "http://ollama:11434/api/generate"    # Hostname is `ollama`, not localhost
+OLLAMA_URL = "http://ollama:11434/api/generate"
 ```
 
-`OllamaClient.wait_ready()` must be called once at module startup. LLM modules may start faster than Ollama can load the model, so startup should block until Ollama is ready.
+Do not use `localhost` inside application containers. `localhost` would point to the caller container, not the Ollama container.
 
-## 5. Independent Verification Script
+`OllamaClient.wait_ready()` should be called once at module startup before work begins.
 
-`scripts/verify_gateway.sh`:
+## 5. Verification
+
+Run:
 
 ```bash
-#!/usr/bin/env bash
-set -euo pipefail
-
-# 1. Ollama is running
-docker compose ps ollama | grep -q "Up" || { echo "FAIL: ollama not running"; exit 1; }
-
-# 2. The host cannot reach it
-curl -sS --max-time 3 http://127.0.0.1:11434/api/tags && { echo "FAIL: port is exposed!"; exit 1; } || echo "PASS: host cannot reach ollama"
-
-# 3. Internal containers can reach it
-docker run --rm --network llm-pipeline_llm_internal curlimages/curl -sS --max-time 10 http://ollama:11434/api/tags >/dev/null && echo "PASS: internal reachable" || { echo "FAIL: internal unreachable"; exit 1; }
-
-# 4. All allowlisted models are present
-REQUIRED=$(jq -r '.approved[]' config/approved_model_tags.json)
-AVAILABLE=$(docker run --rm --network llm-pipeline_llm_internal curlimages/curl -sS http://ollama:11434/api/tags | jq -r '.models[].name')
-for m in $REQUIRED; do
-  echo "$AVAILABLE" | grep -q "^$m$" && echo "PASS: $m present" || { echo "FAIL: $m missing"; exit 1; }
-done
+bash scripts/verify_gateway.sh
 ```
 
-Run this script in CI and before release.
+The script checks:
 
-## 6. Troubleshooting Quick Reference
+- runtime Compose syntax
+- seed Compose syntax
+- runtime Ollama container status
+- Docker GPU device request
+- tiny generation through `/api/generate`
+- GPU placement through `ollama ps`
+- host isolation, where `127.0.0.1:11434` must fail
+- internal reachability through `http://ollama:11434/api/version`
+- required models from `config/approved_model_tags.json`
+
+The current expected internal version response looks like:
+
+```json
+{"version":"0.16.2"}
+```
+
+## 6. Troubleshooting
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| All LLM modules hang | Ollama is not ready | Check `docker logs ollama`; wait through `start_period` |
-| `connection refused` | Wrong URL | Confirm it is `http://ollama:11434`, not localhost |
-| Host can access 11434 | `ports:` was not removed | Check compose.yaml and confirm the runtime service has no ports |
-| Model not found | Model was not seeded | Run `scripts/seed_model.sh <model>` |
-| GPU is not used | Missing `deploy.resources` or missing driver | Run `docker run --rm --gpus all nvidia/cuda:12.3.2-base-ubuntu22.04 nvidia-smi` |
+| Host can access `127.0.0.1:11434` during runtime | Runtime service has a `ports:` mapping, or seed mode is still running | Stop seed mode and check `compose.yaml` |
+| Internal curl cannot resolve `ollama` | Wrong network name or Compose project name | Run `docker compose ps` and use `COMPOSE_PROJECT_NAME=<name> bash scripts/verify_gateway.sh` if needed |
+| Model is missing | It was not seeded into `volumes/ollama/` | Run `./scripts/seed_model.sh <model>` |
+| GPU startup fails | Docker cannot expose a GPU to containers | Fix NVIDIA Docker Desktop / WSL GPU setup and rerun `docker run --rm --gpus all nvidia/cuda:12.3.2-base-ubuntu22.04 nvidia-smi` |
+| LLM call hangs on first request | Model is loading | Check `docker compose logs -f ollama` and wait |
 
 ## 7. Build Checklist
 
-- [ ] `compose.seed.yaml` is complete and runnable.
-- [ ] The `ollama` service in `compose.yaml` has no `ports:`.
-- [ ] The `internal: true` network is defined.
-- [ ] Healthcheck is configured.
-- [ ] `scripts/seed_model.sh` is executable.
-- [ ] All four checks in `scripts/verify_gateway.sh` pass.
-- [ ] `config/approved_model_tags.json` exists.
-- [ ] README clearly states that seed must be run before first use.
+- [x] Runtime `ollama` service exists and has no `ports:`.
+- [x] Runtime network is internal.
+- [x] Runtime model volume is read-only.
+- [x] Runtime service runs as non-root and drops capabilities.
+- [x] Seed service can temporarily expose `127.0.0.1:11434`.
+- [x] Model seed script exists.
+- [x] GPU is enabled by default.
+- [x] Gateway verification script exists.
