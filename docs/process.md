@@ -141,11 +141,23 @@ curl http://127.0.0.1:5108/healthz
 
 ### 2.3 Module 09: aggregator
 
+Status: implemented on 2026-04-20. The module reads per-page intermediate JSON, applies cross-page cleanup with `normalizer`, writes the three final CSVs plus `aggregation_summary.json`, exposes a CLI, and has a standalone UI at `http://127.0.0.1:5109/aggregate/` when started with the `aggregator` profile.
+
 - Function: read per-page outputs from `data/intermediate/<doc_id>/*.json`, merge, deduplicate, and write final CSVs.
 - Reuse `dedupe_place_rows`, `merge_named_people`, and related functions from normalizer.
 - Standalone UI: current CSV preview, three statistic columns, and download buttons.
 
 Verification: put fake `.json` files into `data/intermediate/demo/`, run aggregation, and confirm the CSVs match expected output.
+
+Implemented verification:
+
+```bash
+docker build -f docker/aggregator.Dockerfile -t manumission-aggregator:phase2 .
+docker run --rm manumission-aggregator:phase2 python -m unittest discover -s /app/modules/aggregator/tests -p "test_*.py"
+docker compose --profile aggregator run --rm aggregator python -m modules.aggregator.cli --doc-id agg_smoke
+docker compose --profile aggregator up -d --build aggregator
+curl http://127.0.0.1:5109/healthz
+```
 
 Milestone M2: three modules can run independently and each has a visible UI. Ollama is not used yet.
 
@@ -361,8 +373,8 @@ The project is split into seven phases, each with a clear demoable result. This 
 - [x] `pdf_ingest` can register an existing local PDF from `data/input_pdfs/`.
 - [x] Partial large-PDF ingest can resume from the manifest without rerendering completed pages.
 - [x] `normalizer` UI can demonstrate rules in real time.
-- [ ] `aggregator` UI can show and download CSVs generated from fake data.
-- [ ] All three modules run through `docker compose run --rm <service> ...`.
+- [x] `aggregator` UI can show and download CSVs generated from fake data.
+- [x] All three modules run through `docker compose run --rm <service> ...`.
 
 ### M3 OCR
 

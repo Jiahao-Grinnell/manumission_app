@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Aggregator</title>
+    <link rel="stylesheet" href="{{ url_for('aggregator.static', filename='aggregator.css') }}">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Module 09</p>
+          <h1>Aggregator</h1>
+        </div>
+        {% if selected_doc_id %}
+          <button id="run" data-doc-id="{{ selected_doc_id }}">Re-aggregate</button>
+        {% endif %}
+      </header>
+
+      <form class="picker" method="get" action="{{ url_for('aggregator.index') }}">
+        <label>
+          Document
+          <select name="doc_id" onchange="this.form.submit()">
+            {% if not docs %}
+              <option value="">No intermediate docs found</option>
+            {% endif %}
+            {% for doc in docs %}
+              <option value="{{ doc.doc_id }}" {% if selected_doc_id == doc.doc_id %}selected{% endif %}>
+                {{ doc.doc_id }} - {{ doc.json_files }} json files
+              </option>
+            {% endfor %}
+          </select>
+        </label>
+        <button type="submit">Open</button>
+      </form>
+
+      <section id="result">
+        {% if result %}
+          <div class="summary">
+            {% for key, value in result.stats.items() %}
+              {% if key not in ["report_types", "crime_types", "statuses"] %}
+                <div><span>{{ key.replace("_", " ") }}</span><strong>{{ value }}</strong></div>
+              {% endif %}
+            {% endfor %}
+          </div>
+
+          {% if result.cleanup_actions %}
+            <section class="actions">
+              <h2>Cleanup Actions</h2>
+              {% for action in result.cleanup_actions %}
+                <p>{{ action }}</p>
+              {% endfor %}
+            </section>
+          {% endif %}
+
+          <div class="downloads">
+            <a href="{{ url_for('aggregator.download_zip', doc_id=result.doc_id) }}">Download all CSVs</a>
+          </div>
+
+          {% for key, file in result.files.items() %}
+            <section class="preview">
+              <h2>{{ file.filename }}</h2>
+              {% if file.exists %}
+                <a href="{{ url_for('aggregator.download_csv', doc_id=result.doc_id, name=file.filename) }}">Download</a>
+                <div class="table-wrap">
+                  <table>
+                    {% if file.rows %}
+                      <thead>
+                        <tr>
+                          {% for column in file.rows[0].keys() %}
+                            <th>{{ column }}</th>
+                          {% endfor %}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {% for row in file.rows[:25] %}
+                          <tr>
+                            {% for value in row.values() %}
+                              <td>{{ value }}</td>
+                            {% endfor %}
+                          </tr>
+                        {% endfor %}
+                      </tbody>
+                    {% else %}
+                      <tbody><tr><td>No rows yet</td></tr></tbody>
+                    {% endif %}
+                  </table>
+                </div>
+              {% else %}
+                <p>Run aggregation to create this CSV.</p>
+              {% endif %}
+            </section>
+          {% endfor %}
+        {% else %}
+          <section class="empty">
+            <h2>No document selected</h2>
+            <p>Put fake or real page JSON under data/intermediate/&lt;doc_id&gt;/, then re-open this page.</p>
+          </section>
+        {% endif %}
+      </section>
+    </main>
+
+    <script>
+      const button = document.getElementById("run");
+      if (button) {
+        button.addEventListener("click", async () => {
+          button.disabled = true;
+          button.textContent = "Aggregating...";
+          await fetch(`/aggregate/run/${button.dataset.docId}`, {method: "POST"});
+          window.location.reload();
+        });
+      }
+    </script>
+  </body>
+</html>

@@ -2,6 +2,8 @@
 
 > Merge all per-page intermediate JSON files into the three final CSV files. Pure Python, no LLM.
 
+Implementation status as of 2026-04-20: core aggregation, cross-page name cleanup, place normalization/deduplication, atomic CSV writes, `aggregation_summary.json`, CLI, unit tests, zip download, and standalone UI are implemented. Main `web_app` mounting remains a Phase 6 integration step.
+
 ## 1. Purpose
 
 Traverse `data/intermediate/<doc_id>/p*.meta.json` and `p*.places.json`, then merge them into:
@@ -31,7 +33,8 @@ data/intermediate/<doc_id>/
 ```text
 |-- Detailed info.csv     # Matches original DETAIL_COLUMNS
 |-- name place.csv        # Matches original PLACE_COLUMNS
-`-- run_status.csv        # Matches original STATUS_COLUMNS
+|-- run_status.csv        # Matches original STATUS_COLUMNS
+`-- aggregation_summary.json
 ```
 
 CSV column definitions are inherited from the original code. See `shared/schemas.py`:
@@ -164,21 +167,34 @@ Visualization goals:
 
 ## 8. Docker
 
-Even though it does not use an LLM, give it a standalone container for CI and independent calls:
+Even though it does not use an LLM, it has a standalone container for CI and independent calls:
 
 ```yaml
   aggregator:
     build:
       context: .
-      dockerfile: docker/ner.Dockerfile     # Shared with NER modules
-    networks: [ llm_internal ]
+      dockerfile: docker/aggregator.Dockerfile
+    networks: [ llm_frontend ]
     volumes:
-      - ./data/intermediate:/data/intermediate:ro
-      - ./data/output:/data/output
-    profiles: [ "standalone", "all" ]
+      - ./data:/data
+    ports:
+      - "127.0.0.1:5109:5109"
+    profiles: [ "aggregator", "standalone", "all" ]
     command: >
-      gunicorn -b 0.0.0.0:5109 -w 2 --timeout 300
+      gunicorn -b 0.0.0.0:5109 -w 1 --timeout 300
       'modules.aggregator.standalone:create_app()'
+```
+
+Run it:
+
+```bash
+docker compose --profile aggregator up -d --build aggregator
+```
+
+Open:
+
+```text
+http://127.0.0.1:5109/aggregate/
 ```
 
 ## 9. Tests
@@ -191,14 +207,29 @@ Unit tests, easiest module to test:
 - `test_atomic_write()` verifies an interrupted write does not corrupt the old file, using mocked I/O exceptions.
 - `test_empty_doc()` verifies an empty `intermediate/` still produces three empty CSV files with headers.
 
+Current test command:
+
+```bash
+docker build -f docker/aggregator.Dockerfile -t manumission-aggregator:phase2 .
+docker run --rm manumission-aggregator:phase2 python -m unittest discover -s /app/modules/aggregator/tests -p "test_*.py"
+```
+
+Current fake-data smoke command:
+
+```bash
+docker compose --profile aggregator run --rm aggregator python -m modules.aggregator.cli --doc-id agg_smoke
+```
+
 ## 10. Build Checklist
 
-- [ ] `aggregate()` reads all intermediate JSON files.
-- [ ] CSV columns match the original system.
-- [ ] Cross-page same-person merging is enabled.
-- [ ] Atomic writes use tmp + rename.
-- [ ] Empty data still produces empty CSV files with headers.
-- [ ] UI has three tabs, filter, and pagination.
-- [ ] Statistics cards and distribution bars are present.
-- [ ] Zip download works.
-- [ ] Unit tests cover four typical scenarios.
+- [x] `aggregate()` reads all intermediate JSON files.
+- [x] CSV columns match the original system.
+- [x] Cross-page same-person merging is enabled.
+- [x] Atomic writes use tmp + rename.
+- [x] Empty data still produces empty CSV files with headers.
+- [x] UI previews all three CSVs.
+- [x] Statistics cards are present.
+- [x] Zip download works.
+- [x] Unit tests cover small-doc and empty-doc scenarios.
+- [ ] UI filter and pagination.
+- [ ] Broaden tests for mocked interrupted writes.

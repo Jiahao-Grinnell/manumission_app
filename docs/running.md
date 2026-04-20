@@ -17,7 +17,7 @@ The project is being built phase by phase. Do not expect every URL to work yet.
 Current completed runtime target:
 
 ```text
-M2 / Phase 2.2: PDF ingest + normalizer
+M2 / Phase 2.3: PDF ingest + normalizer + aggregator
 ```
 
 Available now:
@@ -32,15 +32,17 @@ Available now:
 - Browser upload and `data/input_pdfs/` registration both work for `pdf_ingest`.
 - `normalizer` can normalize names, places, dates, evidence, compare names, and dedupe place rows.
 - `normalizer` has a standalone local UI at `http://127.0.0.1:5108/normalizer/`.
+- `aggregator` can read fake or real intermediate JSON and write final CSVs.
+- `aggregator` has a standalone local UI at `http://127.0.0.1:5109/aggregate/`.
 
 Not available yet:
 
 - `http://127.0.0.1:5000/`
 - Main Web App
 - Dashboard
-- OCR, classifier, NER, aggregator, and orchestration pages
+- OCR, classifier, NER, and orchestration pages
 
-`http://127.0.0.1:5000/` becomes available after M6 / Phase 6, when the `web_app` service is implemented and added to Compose. During the current Phase 2.2 target, port 5000 is expected to fail.
+`http://127.0.0.1:5000/` becomes available after M6 / Phase 6, when the `web_app` service is implemented and added to Compose. During the current Phase 2.3 target, port 5000 is expected to fail.
 
 ## 2. Open the Project
 
@@ -510,7 +512,73 @@ Expected highlights:
 "same":true
 ```
 
-## 13. Future Main Web UI Routes
+## 13. Phase 2.3 Aggregator Testing
+
+Build and run the standalone aggregator UI:
+
+```bash
+docker compose --profile aggregator up -d --build aggregator
+```
+
+Open:
+
+```text
+http://127.0.0.1:5109/aggregate/
+```
+
+Health check:
+
+```bash
+curl http://127.0.0.1:5109/healthz
+```
+
+Expected:
+
+```json
+{"module":"aggregator","status":"ok"}
+```
+
+Run the module unit tests:
+
+```bash
+docker build -f docker/aggregator.Dockerfile -t manumission-aggregator:phase2 .
+docker run --rm manumission-aggregator:phase2 python -m unittest discover -s /app/modules/aggregator/tests -p "test_*.py"
+docker compose --profile aggregator run --rm aggregator python -m unittest discover -s /app/modules/aggregator/tests -p "test_*.py"
+```
+
+Run the fake-data smoke test:
+
+```bash
+docker compose --profile aggregator run --rm aggregator python -m modules.aggregator.cli --doc-id agg_smoke
+```
+
+Expected output files:
+
+```text
+data/output/agg_smoke/
+  Detailed info.csv
+  name place.csv
+  run_status.csv
+  aggregation_summary.json
+```
+
+Smoke-test preview and zip download:
+
+```bash
+curl http://127.0.0.1:5109/aggregate/result/agg_smoke
+curl -I http://127.0.0.1:5109/aggregate/download/agg_smoke.zip
+```
+
+Expected highlights:
+
+```text
+"detail_rows":1
+"place_rows":1
+"Merged name variants"
+Content-Type: application/zip
+```
+
+## 14. Future Main Web UI Routes
 
 After M6 / Phase 6, the main Web App should expose these local routes:
 
@@ -529,9 +597,9 @@ After M6 / Phase 6, the main Web App should expose these local routes:
 | Normalizer | `http://127.0.0.1:5000/normalizer/` | Rule playground |
 | Aggregator | `http://127.0.0.1:5000/aggregate/` | CSV preview and download |
 
-These routes are future targets, not current Phase 2.2 behavior.
+These routes are future targets, not current Phase 2.3 behavior.
 
-## 14. Running Tests
+## 15. Running Tests
 
 Shared-library tests:
 
@@ -558,7 +626,7 @@ Future module tests should follow this pattern:
 docker compose run --rm <module_service> python -m unittest discover -s src/modules/<module>/tests -p "test_*.py"
 ```
 
-## 15. Changing Models Later
+## 16. Changing Models Later
 
 To switch the text extraction model:
 
@@ -605,7 +673,7 @@ To switch the OCR model:
 
 Keep model tags exact. `qwen2.5:14b-instruct` and `qwen2.5:latest` are different models.
 
-## 16. Useful Commands
+## 17. Useful Commands
 
 Start GPU Ollama:
 
@@ -656,7 +724,7 @@ Run gateway verification:
 bash scripts/verify_gateway.sh
 ```
 
-## 17. Troubleshooting
+## 18. Troubleshooting
 
 ### `docker compose up -d ollama` fails with a GPU error
 
@@ -788,7 +856,7 @@ OLLAMA_LOAD_TIMEOUT=10m
 
 This avoids keeping the text model and OCR model in VRAM at the same time on a 16 GB GPU.
 
-## 18. Artifact Locations
+## 19. Artifact Locations
 
 | Artifact | Path |
 |---|---|
