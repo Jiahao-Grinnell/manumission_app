@@ -6,6 +6,8 @@ Manumission App is an end-to-end modular Flask application for extracting inform
 
 The system has been refactored from monolithic Python scripts into modular services. Each module can run independently, be tested independently, and be visualized through its own UI.
 
+Current completed runtime target: M2 / Phase 2.2. Ollama gateway is available; `pdf_ingest` can upload or register PDFs, render page PNGs, write manifests, and show thumbnails at `http://127.0.0.1:5102/ingest/`; `normalizer` can demonstrate name, place, date, evidence, name comparison, and place dedupe rules at `http://127.0.0.1:5108/normalizer/`.
+
 ## Architecture
 
 The system consists of the following modules:
@@ -54,6 +56,30 @@ The system consists of the following modules:
    ```
 
 The browser URL `http://127.0.0.1:5000` becomes available after the Web App module is implemented.
+
+To run the current PDF ingest UI:
+
+```bash
+docker compose --profile ingest up -d --build pdf_ingest
+```
+
+Then open:
+
+```text
+http://127.0.0.1:5102/ingest/
+```
+
+To run the current normalizer UI:
+
+```bash
+docker compose --profile normalizer up -d --build normalizer
+```
+
+Then open:
+
+```text
+http://127.0.0.1:5108/normalizer/
+```
 
 ## Usage
 

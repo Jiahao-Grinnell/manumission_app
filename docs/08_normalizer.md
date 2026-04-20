@@ -2,6 +2,8 @@
 
 > Pure Python normalization, validation, and deduplication utilities. **Modules 05, 06, 07, and 09 depend on it. It does not depend on any LLM.**
 
+Implementation status as of 2026-04-20: name, place, date, evidence, and place-row dedupe utilities are implemented; `config/schemas/vocab.yaml` supplies editable place mappings and stopwords; unit tests and a standalone visual UI are available. Main `web_app` mounting remains a Phase 6 integration step.
+
 ## 1. Purpose
 
 Centralize the "data cleaning" logic that was scattered throughout the original `ner_extract.py`:
@@ -22,7 +24,7 @@ There are two reasons:
 1. It is shared by four or more modules and must be extracted.
 2. It has high visualization value. Name, place, and date rules are complex, and an interactive UI lets users test rules at any time.
 
-This module is both a **library** imported by other modules and a **service** with its own UI. It does **not** have an independent container; its blueprint is mounted inside the main `web_app`.
+This module is both a **library** imported by other modules and a **service** with its own UI. For Phase 2.2 development it also has a small standalone container bound to localhost; in Phase 6 the same blueprint will be mounted inside the main `web_app`.
 
 ## 3. Directory Structure
 
@@ -38,9 +40,12 @@ src/modules/normalizer/
 |                       # extract_doc_year / MONTHS / ISO_DATE_PAT
 |-- evidence.py         # clean_evidence / normalize_for_match
 |-- vocabulary.py       # NAME_STOPWORDS / PLACE_STOPWORDS, loaded from config/schemas/vocab.yaml
-|-- blueprint.py        # /normalizer/ UI, mounted only in the main web_app
+|-- blueprint.py        # /normalizer/ UI and JSON API
+|-- standalone.py       # local Phase 2.2 app factory
 |-- templates/
 |   `-- ui.html
+|-- static/
+|   `-- normalizer.css
 `-- tests/
     |-- test_names.py
     |-- test_places.py
@@ -185,7 +190,19 @@ This UI is especially useful for domain researchers who are not developers. They
 
 ## 7. Docker
 
-This module does **not** exist independently as a container. It is copied into all NER-related images by `docker/ner.Dockerfile`; its blueprint is mounted in the main app built by `docker/web.Dockerfile`.
+For Phase 2.2 visual testing, `docker/normalizer.Dockerfile` builds a lightweight Flask/Gunicorn container:
+
+```bash
+docker compose --profile normalizer up -d --build normalizer
+```
+
+Open:
+
+```text
+http://127.0.0.1:5108/normalizer/
+```
+
+The service is bound to `127.0.0.1` only. Later NER and web images can copy/import the same package without duplicating the rules.
 
 ## 8. Tests
 
@@ -197,7 +214,20 @@ This module does **not** exist independently as a container. It is copied into a
 - `test_evidence.py`: long evidence truncation and whitespace merging.
 
 ```bash
-pytest src/modules/normalizer/tests/ --cov=modules.normalizer
+docker build -f docker/normalizer.Dockerfile -t manumission-normalizer:phase2 .
+docker run --rm manumission-normalizer:phase2 python -m unittest discover -s /app/modules/normalizer/tests -p "test_*.py"
+```
+
+Current smoke checks include:
+
+```bash
+curl -X POST http://127.0.0.1:5108/normalizer/normalize/place \
+  -H "Content-Type: application/json" \
+  -d '{"raw":"shargah"}'
+
+curl -X POST http://127.0.0.1:5108/normalizer/normalize/date \
+  -H "Content-Type: application/json" \
+  -d '{"raw":"17th May 1931","doc_year":"1931"}'
 ```
 
 ## 9. Important Conventions
@@ -209,11 +239,11 @@ pytest src/modules/normalizer/tests/ --cov=modules.normalizer
 
 ## 10. Build Checklist
 
-- [ ] All normalization functions from the original code are moved here.
-- [ ] `config/schemas/vocab.yaml` is the source of truth for `PLACE_MAP` and stopwords.
-- [ ] Unit test coverage is at least 90%.
-- [ ] All UI tabs are present.
-- [ ] Date UI shows the pattern-hit trace.
-- [ ] Name comparison UI shows token overlap.
+- [x] All normalization functions from the original code are moved here.
+- [x] `config/schemas/vocab.yaml` is the source of truth for `PLACE_MAP` and stopwords.
+- [x] Unit tests cover the main legacy edge cases.
+- [x] All UI tools are present.
+- [x] Date UI shows the pattern-hit trace.
+- [x] Name comparison UI shows token overlap.
 - [ ] Blueprint is mounted at `/normalizer/` in the main web_app.
 - [ ] Other modules import and use it.

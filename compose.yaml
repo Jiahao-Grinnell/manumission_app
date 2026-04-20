@@ -28,6 +28,79 @@ services:
       retries: 30
       start_period: 60s
 
+  pdf_ingest:
+    build:
+      context: .
+      dockerfile: docker/ingest.Dockerfile
+    environment:
+      DATA_ROOT: /data
+      FLASK_ENV: production
+    user: "10001:10001"
+    volumes:
+      - ./data:/data
+    networks:
+      - llm_frontend
+    ports:
+      - "127.0.0.1:5102:5102"
+    profiles:
+      - ingest
+      - standalone
+      - all
+    command: >
+      gunicorn -b 0.0.0.0:5102 -w 1
+      'modules.pdf_ingest.standalone:create_app()'
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:5102/healthz', timeout=2).read()\"",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  normalizer:
+    build:
+      context: .
+      dockerfile: docker/normalizer.Dockerfile
+    environment:
+      DATA_ROOT: /data
+      PROMPT_DIR: /app/config/prompts
+      FLASK_ENV: production
+    user: "10001:10001"
+    volumes:
+      - ./data:/data
+    networks:
+      - llm_frontend
+    ports:
+      - "127.0.0.1:5108:5108"
+    profiles:
+      - normalizer
+      - standalone
+      - all
+    command: >
+      gunicorn -b 0.0.0.0:5108 -w 1
+      'modules.normalizer.standalone:create_app()'
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:5108/healthz', timeout=2).read()\"",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
 networks:
   llm_internal:
     internal: true

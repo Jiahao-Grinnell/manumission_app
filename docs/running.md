@@ -17,7 +17,7 @@ The project is being built phase by phase. Do not expect every URL to work yet.
 Current completed runtime target:
 
 ```text
-M1 / Phase 1.2: Ollama gateway
+M2 / Phase 2.2: PDF ingest + normalizer
 ```
 
 Available now:
@@ -27,16 +27,20 @@ Available now:
 - Ollama is reachable only from Docker's internal network.
 - The host cannot reach runtime Ollama at `127.0.0.1:11434`.
 - Required models are stored under `volumes/ollama/`.
+- `pdf_ingest` can split PDFs into `data/pages/<doc_id>/`.
+- `pdf_ingest` has a CLI and a standalone local UI at `http://127.0.0.1:5102/ingest/`.
+- Browser upload and `data/input_pdfs/` registration both work for `pdf_ingest`.
+- `normalizer` can normalize names, places, dates, evidence, compare names, and dedupe place rows.
+- `normalizer` has a standalone local UI at `http://127.0.0.1:5108/normalizer/`.
 
 Not available yet:
 
 - `http://127.0.0.1:5000/`
 - Main Web App
-- Upload page
 - Dashboard
-- Module visual pages
+- OCR, classifier, NER, aggregator, and orchestration pages
 
-`http://127.0.0.1:5000/` becomes available after M6 / Phase 6, when the `web_app` service is implemented and added to Compose. During M1, port 5000 is expected to fail.
+`http://127.0.0.1:5000/` becomes available after M6 / Phase 6, when the `web_app` service is implemented and added to Compose. During the current Phase 2.2 target, port 5000 is expected to fail.
 
 ## 2. Open the Project
 
@@ -358,28 +362,70 @@ http://127.0.0.1:5000/
 
 For now, this URL does not work because there is no `web_app` service in `compose.yaml`.
 
-## 11. Phase 2.1 PDF Ingest Testing Later
+## 11. Phase 2.1 PDF Ingest Testing
 
-After Phase 2.1 is implemented, `pdf_ingest` should have both CLI tests and a visual test UI.
+`pdf_ingest` has both CLI tests and a visual test UI.
+
+Build and run its standalone UI:
+
+```bash
+docker compose --profile ingest up -d --build pdf_ingest
+```
+
+Open:
+
+```text
+http://127.0.0.1:5102/ingest/
+```
+
+Health check:
+
+```bash
+curl http://127.0.0.1:5102/healthz
+```
+
+Expected:
+
+```json
+{"module":"pdf_ingest","status":"ok"}
+```
+
+Run the module unit tests:
+
+```bash
+docker build -f docker/ingest.Dockerfile -t manumission-ingest:phase2 .
+docker run --rm manumission-ingest:phase2 python -m unittest discover -s /app/modules/pdf_ingest/tests -p "test_*.py"
+```
 
 Expected CLI shape:
 
 ```bash
-docker compose run --rm pdf_ingest python -m modules.pdf_ingest.cli \
+docker compose --profile ingest run --rm pdf_ingest python -m modules.pdf_ingest.cli \
   --pdf /data/input_pdfs/sample_input_1.pdf \
   --doc-id sample_input_1 \
   --dpi 200 \
   --out /data/pages
 ```
 
+Fast existing-file smoke test using a local sample:
+
+```bash
+mkdir -p data/input_pdfs
+cp "sample input 2.pdf" data/input_pdfs/sample_input_2.pdf
+
+curl -X POST http://127.0.0.1:5102/ingest/run \
+  -H "Content-Type: application/json" \
+  -d '{"doc_id":"sample_input_2_smoke","source_pdf":"sample_input_2.pdf","dpi":100,"end_page":3}'
+```
+
 Expected output folder:
 
 ```text
-data/pages/sample_input_1/
+data/pages/sample_input_2_smoke/
   manifest.json
   p001.png
   p002.png
-  ...
+  p003.png
 ```
 
 Expected visual UI:
@@ -399,9 +445,72 @@ The UI should show:
 - click-to-open original page image
 - resume status for partial large-PDF ingest
 
-This UI is not available yet. It should be built together with Phase 2.1.
+Upload smoke test from PowerShell, using any small local PDF:
 
-## 12. Future Main Web UI Routes
+```powershell
+curl.exe -L -F "pdf=@sample input 2.pdf" -F "doc_id=upload_fixture" -F "dpi=72" http://127.0.0.1:5102/ingest/upload
+```
+
+The upload route saves the PDF as `data/input_pdfs/<doc_id>.pdf`, renders page PNGs, and redirects back to the thumbnail grid.
+
+## 12. Phase 2.2 Normalizer Testing
+
+Build and run the standalone normalizer UI:
+
+```bash
+docker compose --profile normalizer up -d --build normalizer
+```
+
+Open:
+
+```text
+http://127.0.0.1:5108/normalizer/
+```
+
+Health check:
+
+```bash
+curl http://127.0.0.1:5108/healthz
+```
+
+Expected:
+
+```json
+{"module":"normalizer","status":"ok"}
+```
+
+Run the module unit tests:
+
+```bash
+docker build -f docker/normalizer.Dockerfile -t manumission-normalizer:phase2 .
+docker run --rm manumission-normalizer:phase2 python -m unittest discover -s /app/modules/normalizer/tests -p "test_*.py"
+```
+
+Smoke-test key rules:
+
+```bash
+curl -X POST http://127.0.0.1:5108/normalizer/normalize/place \
+  -H "Content-Type: application/json" \
+  -d '{"raw":"shargah"}'
+
+curl -X POST http://127.0.0.1:5108/normalizer/normalize/date \
+  -H "Content-Type: application/json" \
+  -d '{"raw":"17th May 1931","doc_year":"1931"}'
+
+curl -X POST http://127.0.0.1:5108/normalizer/compare-names \
+  -H "Content-Type: application/json" \
+  -d '{"a":"Mariam bint Yusuf","b":"Marium bint Yousuf"}'
+```
+
+Expected highlights:
+
+```text
+"normalized":"Sharjah"
+"iso":"1931-05-17"
+"same":true
+```
+
+## 13. Future Main Web UI Routes
 
 After M6 / Phase 6, the main Web App should expose these local routes:
 
@@ -420,9 +529,9 @@ After M6 / Phase 6, the main Web App should expose these local routes:
 | Normalizer | `http://127.0.0.1:5000/normalizer/` | Rule playground |
 | Aggregator | `http://127.0.0.1:5000/aggregate/` | CSV preview and download |
 
-These routes are future targets, not current Phase 1.2 behavior.
+These routes are future targets, not current Phase 2.2 behavior.
 
-## 13. Running Tests
+## 14. Running Tests
 
 Shared-library tests:
 
@@ -449,7 +558,7 @@ Future module tests should follow this pattern:
 docker compose run --rm <module_service> python -m unittest discover -s src/modules/<module>/tests -p "test_*.py"
 ```
 
-## 14. Changing Models Later
+## 15. Changing Models Later
 
 To switch the text extraction model:
 
@@ -496,7 +605,7 @@ To switch the OCR model:
 
 Keep model tags exact. `qwen2.5:14b-instruct` and `qwen2.5:latest` are different models.
 
-## 15. Useful Commands
+## 16. Useful Commands
 
 Start GPU Ollama:
 
@@ -547,7 +656,7 @@ Run gateway verification:
 bash scripts/verify_gateway.sh
 ```
 
-## 16. Troubleshooting
+## 17. Troubleshooting
 
 ### `docker compose up -d ollama` fails with a GPU error
 
@@ -559,9 +668,21 @@ docker run --rm --gpus all nvidia/cuda:12.3.2-base-ubuntu22.04 nvidia-smi
 
 If this fails, restart Docker Desktop and WSL. Then retry.
 
-### `docker run --rm --gpus all nvidia/cuda:... nvidia-smi` fails with `error getting credentials`
+### `docker build` or `docker run` fails with `error getting credentials`
 
-This means Docker in WSL could not use its configured Docker Hub credential helper. It usually happens before the image is downloaded, so it does not prove that GPU is broken.
+This means Docker in WSL could not use its configured Docker Hub credential helper. It usually happens before the image is downloaded, so it does not prove that GPU, Dockerfile syntax, or the project image is broken.
+
+Common examples:
+
+```text
+failed to resolve source metadata for docker.io/library/python:3.11-slim
+error getting credentials - err: exit status 1
+```
+
+```text
+docker run --rm --gpus all nvidia/cuda:... nvidia-smi
+error getting credentials
+```
 
 Check your WSL Docker config:
 
@@ -596,6 +717,8 @@ PY
 Then retry:
 
 ```bash
+docker pull python:3.11-slim
+docker build -f docker/ingest.Dockerfile -t manumission-ingest:phase2 .
 docker run --rm --gpus all nvidia/cuda:12.3.2-base-ubuntu22.04 nvidia-smi
 ```
 
@@ -665,7 +788,7 @@ OLLAMA_LOAD_TIMEOUT=10m
 
 This avoids keeping the text model and OCR model in VRAM at the same time on a 16 GB GPU.
 
-## 17. Artifact Locations
+## 18. Artifact Locations
 
 | Artifact | Path |
 |---|---|

@@ -25,6 +25,72 @@ trial_types:
 place_map:
   shargah: Sharjah
   sharjeh: Sharjah
+  sharjah: Sharjah
   dibai: Dubai
+  debai: Dubai
+  dubai: Dubai
   bahrein: Bahrain
-
+  bahrain: Bahrain
+  bushire: Bushehr
+  busheir: Bushehr
+  bushehr: Bushehr
+  mekran: Mekran
+  mokran: Mekran
+  henjam: Henjam
+  honjam: Henjam
+  ras ul khaimah: Ras al Khaimah
+  ras al khaimah: Ras al Khaimah
+  umm al quwain: Umm al Quwain
+  umm ul quwain: Umm al Quwain
+  muscat: Muscat
+  mascat: Muscat
+  zanzibar: Zanzibar
+  abyssinia: Abyssinia
+  abisinia: Abyssinia
+name_stopwords:
+  - slave
+  - slaves
+  - woman
+  - man
+  - boy
+  - girl
+  - unknown
+  - unnamed
+  - agency
+  - resident
+  - secretary
+  - captain
+  - major
+  - sheikh
+  - shaikh
+  - political
+  - residency
+  - certificate
+  - statement
+  - memorandum
+  - telegram
+  - master
+  - owner
+  - buyer
+  - seller
+  - agent
+  - office
+place_stopwords:
+  - unknown
+  - unclear
+  - none
+  - nil
+  - there
+  - here
+  - this agency
+  - the agency
+  - agency
+  - residency
+  - political agency
+  - residency agency
+  - office
+  - record
+  - statement
+  - memorandum
+  - certificate
+  - arrival

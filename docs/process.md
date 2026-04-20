@@ -92,6 +92,8 @@ These modules do not touch the LLM. Their logic is simpler, and they are the pip
 
 ### 2.1 Module 02: pdf_ingest
 
+Status: implemented on 2026-04-20. The module is available as a CLI, a Flask blueprint under `/ingest/*`, and a standalone Compose service at `http://127.0.0.1:5102/ingest/` when started with the `ingest` profile.
+
 - Function: PDF -> `data/pages/<doc_id>/p001.png, p002.png, ...` plus `manifest.json`.
 - Implementation: PyMuPDF, render every page to a 300 DPI PNG.
 - Support two input paths: browser upload for small/medium PDFs and existing-file registration for large PDFs already in `data/input_pdfs/`.
@@ -104,7 +106,18 @@ Verification: upload a small PDF with a few pages, see thumbnails, and confirm `
 
 Also run an existing-file registration smoke test using one local sample PDF. For the fuller local PDF, run a page-range or interrupt/resume test instead of requiring the whole document in every dev loop.
 
+Implemented verification:
+
+```bash
+docker build -f docker/ingest.Dockerfile -t manumission-ingest:phase2 .
+docker run --rm manumission-ingest:phase2 python -m unittest discover -s /app/modules/pdf_ingest/tests -p "test_*.py"
+docker compose --profile ingest up -d --build pdf_ingest
+curl http://127.0.0.1:5102/healthz
+```
+
 ### 2.2 Module 08: normalizer
+
+Status: implemented on 2026-04-20. The module is importable as pure Python utilities, exposes JSON normalization endpoints, and has a standalone UI at `http://127.0.0.1:5108/normalizer/` when started with the `normalizer` profile.
 
 Move normalization functions from `ner_extract.py` and split them into files:
 
@@ -116,6 +129,15 @@ Move normalization functions from `ner_extract.py` and split them into files:
 Standalone UI: a single-page form with inputs for name, place, date string, and free text. Show normalized results and matched rules in real time.
 
 Verification: unit tests should cover original edge cases such as `"shargah" -> "Sharjah"` and `"17th May 1931" -> ISO`.
+
+Implemented verification:
+
+```bash
+docker build -f docker/normalizer.Dockerfile -t manumission-normalizer:phase2 .
+docker run --rm manumission-normalizer:phase2 python -m unittest discover -s /app/modules/normalizer/tests -p "test_*.py"
+docker compose --profile normalizer up -d --build normalizer
+curl http://127.0.0.1:5108/healthz
+```
 
 ### 2.3 Module 09: aggregator
 
@@ -335,10 +357,10 @@ The project is split into seven phases, each with a clear demoable result. This 
 
 ### M2 Non-LLM Modules
 
-- [ ] `pdf_ingest` UI can upload a PDF and show thumbnails.
-- [ ] `pdf_ingest` can register an existing local PDF from `data/input_pdfs/`.
-- [ ] Partial large-PDF ingest can resume from the manifest without rerendering completed pages.
-- [ ] `normalizer` UI can demonstrate rules in real time.
+- [x] `pdf_ingest` UI can upload a PDF and show thumbnails.
+- [x] `pdf_ingest` can register an existing local PDF from `data/input_pdfs/`.
+- [x] Partial large-PDF ingest can resume from the manifest without rerendering completed pages.
+- [x] `normalizer` UI can demonstrate rules in real time.
 - [ ] `aggregator` UI can show and download CSVs generated from fake data.
 - [ ] All three modules run through `docker compose run --rm <service> ...`.
 

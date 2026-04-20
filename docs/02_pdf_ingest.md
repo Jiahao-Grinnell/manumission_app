@@ -2,6 +2,8 @@
 
 > PDF page-splitting module. Converts a scanned PDF into one high-resolution PNG per page. This is the **new entry point** for the pipeline.
 
+Implementation status as of 2026-04-20: core ingest, incremental manifest resume, CLI, Flask blueprint, standalone UI, Dockerfile, and Compose profile are implemented and smoke-tested. The low-disk expansion warning remains a later hardening item.
+
 ## 1. Purpose
 
 The old system accepted loose page images or `.txt` files. The new system accepts **a complete PDF**. This module is responsible for:
@@ -159,6 +161,17 @@ Done. Wrote 137 pages to /data/pages/myDoc/
 Manifest: /data/pages/myDoc/manifest.json
 ```
 
+Current CLI smoke command:
+
+```bash
+docker compose --profile ingest run --rm pdf_ingest python -m modules.pdf_ingest.cli \
+  --pdf /data/input_pdfs/sample_input_2.pdf \
+  --doc-id sample_input_2_smoke \
+  --dpi 100 \
+  --out /data/pages \
+  --end-page 3
+```
+
 ## 7. Test UI Design
 
 A Jinja page with three areas:
@@ -191,38 +204,35 @@ Visualization goals:
 
 ## 8. Standalone Docker Container
 
-`docker/ingest.Dockerfile`:
+`docker/ingest.Dockerfile` is implemented as a self-contained Python 3.11 image that installs `requirements/ingest.txt`, copies `shared`, and copies `modules/pdf_ingest`.
 
-```dockerfile
-FROM llm-pipeline-base:latest
-USER root
-RUN pip install --no-cache-dir pymupdf
-COPY src/modules/pdf_ingest /app/modules/pdf_ingest
-USER 10001:10001
-```
-
-`compose.yaml` fragment using profiles:
+`compose.yaml` includes the standalone service:
 
 ```yaml
   pdf_ingest:
     build:
       context: .
       dockerfile: docker/ingest.Dockerfile
-    networks: [ llm_internal ]
+    networks: [ llm_frontend ]
     volumes:
-      - ./data/input_pdfs:/data/input_pdfs:ro
-      - ./data/pages:/data/pages
-    profiles: [ "standalone", "all" ]
+      - ./data:/data
+    ports:
+      - "127.0.0.1:5102:5102"
+    profiles: [ "ingest", "standalone", "all" ]
     command: >
       gunicorn -b 0.0.0.0:5102 -w 1
       'modules.pdf_ingest.standalone:create_app()'
 ```
 
-Note: the service has no `ports:` block, so it is not externally reachable. Access it through `web_app`, or call it manually with `docker compose exec` from the host.
+The standalone UI is intentionally bound to localhost only:
+
+```text
+http://127.0.0.1:5102/ingest/
+```
 
 ## 9. Unit Tests
 
-- Use `tests/fixtures/tiny.pdf`, a two-page PDF.
+- Generate a two-page PDF dynamically inside the test so no `.pdf` fixture has to be committed.
 - Assert `page_count == 2`.
 - Assert PNG files are generated and dimensions are greater than zero.
 - Validate the manifest, including a stable SHA.
@@ -241,12 +251,12 @@ Note: the service has no `ports:` block, so it is not externally reachable. Acce
 
 ## 11. Build Checklist
 
-- [ ] `core.ingest()` is implemented and unit tests pass.
-- [ ] All seven blueprint routes are implemented.
-- [ ] Existing-file registration works for PDFs already in `data/input_pdfs/`.
-- [ ] CLI works.
-- [ ] Dockerfile builds.
-- [ ] Standalone Compose profile starts and the test UI is reachable through the proxy.
-- [ ] Test PDF upload produces thumbnails and a correct manifest.
-- [ ] Large-PDF resume works from a partial manifest.
+- [x] `core.ingest()` is implemented and unit tests pass.
+- [x] All seven blueprint routes are implemented.
+- [x] Existing-file registration works for PDFs already in `data/input_pdfs/`.
+- [x] CLI works.
+- [x] Dockerfile builds.
+- [x] Standalone Compose profile starts and the test UI is reachable at `127.0.0.1:5102`.
+- [x] Test PDF upload produces thumbnails and a correct manifest.
+- [x] Partial ingest resumes from the manifest without rerendering completed pages.
 - [ ] UI warns about estimated disk expansion and low free space.

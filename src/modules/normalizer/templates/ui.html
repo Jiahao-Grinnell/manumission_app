@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Normalizer</title>
+    <link rel="stylesheet" href="{{ url_for('normalizer.static', filename='normalizer.css') }}">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Module 08</p>
+          <h1>Normalizer</h1>
+        </div>
+        <a href="#dedupe">Dedupe Places</a>
+      </header>
+
+      <section class="tool-grid">
+        <form class="tool" data-endpoint="{{ url_for('normalizer.normalize_name_api') }}">
+          <h2>Name</h2>
+          <label>Raw name <input name="raw" value="  mariam   BINT   YUSUF  "></label>
+          <pre aria-live="polite"></pre>
+        </form>
+
+        <form class="tool" data-endpoint="{{ url_for('normalizer.normalize_place_api') }}">
+          <h2>Place</h2>
+          <label>Raw place <input name="raw" value="shargah"></label>
+          <pre aria-live="polite"></pre>
+        </form>
+
+        <form class="tool" data-endpoint="{{ url_for('normalizer.normalize_date_api') }}">
+          <h2>Date</h2>
+          <label>Date text <input name="raw" value="17th May 1931"></label>
+          <label>Document year <input name="doc_year" value="1931"></label>
+          <pre aria-live="polite"></pre>
+        </form>
+
+        <form class="tool" data-endpoint="{{ url_for('normalizer.compare_names_api') }}">
+          <h2>Compare Names</h2>
+          <label>Name A <input name="a" value="Mariam bint Yusuf"></label>
+          <label>Name B <input name="b" value="Marium bint Yousuf"></label>
+          <pre aria-live="polite"></pre>
+        </form>
+
+        <form class="tool wide" data-endpoint="{{ url_for('normalizer.normalize_evidence_api') }}">
+          <h2>Evidence</h2>
+          <label>Evidence text <textarea name="raw">This   is a long OCR evidence snippet, with punctuation, accents, and enough words to show the twenty five word truncation behavior in the UI.</textarea></label>
+          <pre aria-live="polite"></pre>
+        </form>
+
+        <form id="dedupe" class="tool wide" data-endpoint="{{ url_for('normalizer.dedupe_places_api') }}">
+          <h2>Dedupe Places</h2>
+          <label>Rows as JSON or CSV <textarea name="raw">[
+  {"Name":"Mariam bint Yusuf","Place":"shargah","Order":2},
+  {"Name":"Mariam bint Yusuf","Place":"Sharjah","Order":1,"Arrival Date":"1931-05-17","Date Confidence":"explicit"}
+]</textarea></label>
+          <pre aria-live="polite"></pre>
+        </form>
+      </section>
+    </main>
+
+    <script>
+      const debounce = (fn, wait) => {
+        let id;
+        return (...args) => {
+          clearTimeout(id);
+          id = setTimeout(() => fn(...args), wait);
+        };
+      };
+
+      async function submitTool(form) {
+        const output = form.querySelector("pre");
+        const payload = Object.fromEntries(new FormData(form).entries());
+        output.textContent = "Working...";
+        const response = await fetch(form.dataset.endpoint, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify(payload)
+        });
+        const data = await response.json();
+        output.textContent = JSON.stringify(data, null, 2);
+      }
+
+      document.querySelectorAll("form.tool").forEach((form) => {
+        const run = debounce(() => submitTool(form), 300);
+        form.addEventListener("input", run);
+        form.addEventListener("submit", (event) => {
+          event.preventDefault();
+          submitTool(form);
+        });
+        submitTool(form);
+      });
+    </script>
+  </body>
+</html>

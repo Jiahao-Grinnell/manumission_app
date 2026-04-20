@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>PDF Ingest</title>
+    <link rel="stylesheet" href="{{ url_for('pdf_ingest.static', filename='ingest.css') }}">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Module 02</p>
+          <h1>PDF Ingest</h1>
+        </div>
+        <a class="link-button" href="{{ url_for('pdf_ingest.index') }}">Refresh</a>
+      </header>
+
+      {% with messages = get_flashed_messages() %}
+        {% if messages %}
+          <div class="notice">
+            {% for message in messages %}
+              <p>{{ message }}</p>
+            {% endfor %}
+          </div>
+        {% endif %}
+      {% endwith %}
+
+      <section class="actions">
+        <form method="post" action="{{ url_for('pdf_ingest.upload') }}" enctype="multipart/form-data">
+          <h2>Upload PDF</h2>
+          <label>
+            PDF
+            <input type="file" name="pdf" accept="application/pdf" required>
+          </label>
+          <label>
+            Doc ID
+            <input type="text" name="doc_id" placeholder="optional">
+          </label>
+          <label>
+            DPI
+            <input type="number" name="dpi" min="72" max="600" value="300">
+          </label>
+          <button type="submit">Upload and Split</button>
+        </form>
+
+        <form method="post" action="{{ url_for('pdf_ingest.register') }}">
+          <h2>Register Existing PDF</h2>
+          <label>
+            PDF
+            <select name="source_pdf" required>
+              <option value="">Choose from data/input_pdfs</option>
+              {% for pdf in input_pdfs %}
+                <option value="{{ pdf.name }}">{{ pdf.name }} ({{ (pdf.size_bytes / 1048576) | round(1) }} MB)</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>
+            Doc ID
+            <input type="text" name="doc_id" placeholder="defaults to filename">
+          </label>
+          <label>
+            DPI
+            <input type="number" name="dpi" min="72" max="600" value="300">
+          </label>
+          <button type="submit">Register and Split</button>
+        </form>
+      </section>
+
+      <section class="doc-picker">
+        <form method="get" action="{{ url_for('pdf_ingest.index') }}">
+          <label>
+            Document
+            <select name="doc_id" onchange="this.form.submit()">
+              {% if not docs %}
+                <option value="">No ingested documents yet</option>
+              {% endif %}
+              {% for doc in docs %}
+                <option value="{{ doc.doc_id }}" {% if selected_doc_id == doc.doc_id %}selected{% endif %}>
+                  {{ doc.doc_id }} - {{ doc.status }} ({{ doc.completed_pages }}/{{ doc.page_count }})
+                </option>
+              {% endfor %}
+            </select>
+          </label>
+          <button type="submit">Open</button>
+        </form>
+      </section>
+
+      {% if manifest %}
+        <section class="summary">
+          <div>
+            <span class="label">Doc ID</span>
+            <strong>{{ manifest.doc_id }}</strong>
+          </div>
+          <div>
+            <span class="label">Status</span>
+            <strong class="status status-{{ manifest.status }}">{{ manifest.status }}</strong>
+          </div>
+          <div>
+            <span class="label">Pages</span>
+            <strong>{{ manifest.completed_pages }} / {{ manifest.page_count }}</strong>
+          </div>
+          <div>
+            <span class="label">DPI</span>
+            <strong>{{ manifest.dpi }}</strong>
+          </div>
+          <div>
+            <span class="label">Source</span>
+            <strong>{{ manifest.source_pdf }}</strong>
+          </div>
+          <div>
+            <span class="label">Updated</span>
+            <strong>{{ manifest.updated_at }}</strong>
+          </div>
+        </section>
+
+        {% if manifest.warnings %}
+          <section class="warnings">
+            <h2>Warnings</h2>
+            {% for warning in manifest.warnings %}
+              <p>{{ warning }}</p>
+            {% endfor %}
+          </section>
+        {% endif %}
+
+        <section class="grid" aria-label="Rendered pages">
+          {% for page in manifest.pages %}
+            <article class="thumb status-{{ page.status }}">
+              <a href="{{ url_for('pdf_ingest.page', doc_id=manifest.doc_id, page=page.page) }}" target="_blank" rel="noopener">
+                {% if page.status == "done" %}
+                  <img src="{{ url_for('pdf_ingest.thumb', doc_id=manifest.doc_id, page=page.page) }}" alt="Page {{ page.page }}">
+                {% else %}
+                  <div class="placeholder">{{ page.status }}</div>
+                {% endif %}
+              </a>
+              <div class="thumb-meta">
+                <strong>p{{ "%03d"|format(page.page) }}</strong>
+                {% if page.width and page.height %}
+                  <span>{{ page.width }} x {{ page.height }}</span>
+                {% endif %}
+              </div>
+            </article>
+          {% endfor %}
+        </section>
+      {% else %}
+        <section class="empty">
+          <h2>No document selected</h2>
+          <p>Choose a PDF above to create page images.</p>
+        </section>
+      {% endif %}
+    </main>
+  </body>
+</html>
