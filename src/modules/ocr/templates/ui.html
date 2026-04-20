@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>OCR</title>
+    <link rel="stylesheet" href="{{ url_for('ocr.static', filename='ocr.css') }}">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Module 03</p>
+          <h1>OCR</h1>
+        </div>
+        <button id="preview" {% if not selected_doc_id or not selected_page %}disabled{% endif %}>Preview preprocessing</button>
+      </header>
+
+      <form class="picker" method="get" action="{{ url_for('ocr.index') }}">
+        <label>
+          Document
+          <select name="doc_id" onchange="this.form.submit()">
+            {% if not docs %}<option value="">No ingested documents found</option>{% endif %}
+            {% for doc in docs %}
+              <option value="{{ doc.doc_id }}" {% if selected_doc_id == doc.doc_id %}selected{% endif %}>{{ doc.doc_id }} - {{ doc.pages }} pages</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>
+          Page
+          <select name="page" onchange="this.form.submit()">
+            {% for page in pages %}
+              <option value="{{ page.page }}" {% if selected_page == page.page %}selected{% endif %}>p{{ "%03d"|format(page.page) }}{% if page.has_text %} - text saved{% endif %}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <button type="submit">Open</button>
+      </form>
+
+      <section class="actions">
+        <button id="run-single" {% if not selected_doc_id or not selected_page %}disabled{% endif %}>Run OCR on page</button>
+        <button id="run-all" {% if not selected_doc_id %}disabled{% endif %}>Run all pages</button>
+        {% if selected_doc_id and selected_page %}
+          <a href="{{ url_for('ocr.text', doc_id=selected_doc_id, page=selected_page) }}">Open saved text</a>
+        {% endif %}
+      </section>
+
+      <section>
+        <h2>Preprocessing Pipeline</h2>
+        <div id="strip" class="strip"></div>
+      </section>
+
+      <section>
+        <h2>OCR Text</h2>
+        <pre id="text">Choose preview or OCR.</pre>
+      </section>
+    </main>
+
+    <script>
+      const docId = {{ selected_doc_id|tojson }};
+      const page = {{ selected_page|tojson }};
+      const strip = document.getElementById("strip");
+      const text = document.getElementById("text");
+
+      document.getElementById("preview")?.addEventListener("click", async () => {
+        text.textContent = "Preparing preview...";
+        const response = await fetch(`/ocr/preview/${docId}/${page}`, {method: "POST", headers: {"Content-Type": "application/json"}, body: "{}"});
+        const data = await response.json();
+        strip.innerHTML = "";
+        data.images.forEach((item) => {
+          const card = document.createElement("article");
+          card.className = "frame";
+          card.innerHTML = `<h3>${item.label}</h3><img src="${item.image}" alt="${item.label}"><p>${item.shape[1]} x ${item.shape[0]}</p>`;
+          strip.appendChild(card);
+        });
+        text.textContent = JSON.stringify({crop_box: data.crop_box, images: data.images.length}, null, 2);
+      });
+
+      document.getElementById("run-single")?.addEventListener("click", async () => {
+        text.textContent = "Running OCR...";
+        const response = await fetch(`/ocr/run-single/${docId}/${page}`, {method: "POST", headers: {"Content-Type": "application/json"}, body: "{}"});
+        const data = await response.json();
+        text.textContent = data.text || JSON.stringify(data, null, 2);
+      });
+
+      document.getElementById("run-all")?.addEventListener("click", async () => {
+        text.textContent = "Starting OCR job...";
+        const response = await fetch(`/ocr/run-all/${docId}`, {method: "POST", headers: {"Content-Type": "application/json"}, body: "{}"});
+        text.textContent = JSON.stringify(await response.json(), null, 2);
+      });
+    </script>
+  </body>
+</html>

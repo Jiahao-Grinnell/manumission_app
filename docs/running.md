@@ -17,7 +17,7 @@ The project is being built phase by phase. Do not expect every URL to work yet.
 Current completed runtime target:
 
 ```text
-M2 / Phase 2.3: PDF ingest + normalizer + aggregator
+M3 / Phase 3: PDF ingest + normalizer + aggregator + OCR
 ```
 
 Available now:
@@ -34,15 +34,18 @@ Available now:
 - `normalizer` has a standalone local UI at `http://127.0.0.1:5108/normalizer/`.
 - `aggregator` can read fake or real intermediate JSON and write final CSVs.
 - `aggregator` has a standalone local UI at `http://127.0.0.1:5109/aggregate/`.
+- `ocr` can preview the preprocessing pipeline for rendered page PNGs.
+- `ocr` has a CLI and a standalone local UI at `http://127.0.0.1:5103/ocr/`.
+- `ocr` writes durable text artifacts under `data/ocr_text/<doc_id>/` when the OCR model is available.
 
 Not available yet:
 
 - `http://127.0.0.1:5000/`
 - Main Web App
 - Dashboard
-- OCR, classifier, NER, and orchestration pages
+- Classifier, NER, and orchestration pages
 
-`http://127.0.0.1:5000/` becomes available after M6 / Phase 6, when the `web_app` service is implemented and added to Compose. During the current Phase 2.3 target, port 5000 is expected to fail.
+`http://127.0.0.1:5000/` becomes available after M6 / Phase 6, when the `web_app` service is implemented and added to Compose. During the current Phase 3 target, port 5000 is expected to fail.
 
 ## 2. Open the Project
 
@@ -578,7 +581,97 @@ Expected highlights:
 Content-Type: application/zip
 ```
 
-## 14. Future Main Web UI Routes
+## 14. Phase 3 OCR Testing
+
+Build and run the standalone OCR UI:
+
+```bash
+docker compose --profile ocr up -d --build ocr
+```
+
+Open:
+
+```text
+http://127.0.0.1:5103/ocr/
+```
+
+Health check:
+
+```bash
+curl http://127.0.0.1:5103/healthz
+```
+
+Expected:
+
+```json
+{"module":"ocr","status":"ok"}
+```
+
+Run the module unit tests:
+
+```bash
+docker build -f docker/ocr.Dockerfile -t manumission-ocr:phase3 .
+docker run --rm manumission-ocr:phase3 python -m unittest discover -s /app/modules/ocr/tests -p "test_*.py"
+```
+
+Expected:
+
+```text
+Ran 5 tests
+OK
+```
+
+Smoke-test preprocessing preview against an ingested document:
+
+```bash
+curl -X POST http://127.0.0.1:5103/ocr/preview/upload_fixture/1 \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+Expected highlights:
+
+```text
+"label":"original"
+"label":"enhanced"
+"label":"deskewed"
+"label":"cropped"
+"label":"tile 0"
+```
+
+Run full OCR for a rendered document after `glm-ocr:latest` has been downloaded:
+
+```bash
+docker compose --profile ocr run --rm ocr python -m modules.ocr.cli \
+  --in_dir /data/pages/upload_fixture \
+  --out_dir /data/ocr_text/upload_fixture \
+  --model glm-ocr:latest \
+  --ollama_url http://ollama:11434/api/generate \
+  --no_debug \
+  --max_new_tokens 1200
+```
+
+Expected output files:
+
+```text
+data/ocr_text/upload_fixture/
+  manifest.json
+  p001.txt
+  p002.txt
+  run_status.log
+```
+
+Implemented smoke result on 2026-04-20:
+
+```text
+Done. Status: complete. Completed 2/2 pages.
+p001.txt: Upload One
+p002.txt: Upload Two
+```
+
+The full OCR call can take a while because it loads the vision model and sends one or more images per page to Ollama. The fast Phase 3 dev loop is the preprocessing preview plus mocked unit tests; the full live-model smoke test only needs to be repeated after OCR model, prompt, preprocessing, or runtime changes.
+
+## 15. Future Main Web UI Routes
 
 After M6 / Phase 6, the main Web App should expose these local routes:
 
@@ -597,9 +690,9 @@ After M6 / Phase 6, the main Web App should expose these local routes:
 | Normalizer | `http://127.0.0.1:5000/normalizer/` | Rule playground |
 | Aggregator | `http://127.0.0.1:5000/aggregate/` | CSV preview and download |
 
-These routes are future targets, not current Phase 2.3 behavior.
+These routes are future targets, not current Phase 3 behavior.
 
-## 15. Running Tests
+## 16. Running Tests
 
 Shared-library tests:
 
@@ -626,7 +719,7 @@ Future module tests should follow this pattern:
 docker compose run --rm <module_service> python -m unittest discover -s src/modules/<module>/tests -p "test_*.py"
 ```
 
-## 16. Changing Models Later
+## 17. Changing Models Later
 
 To switch the text extraction model:
 
@@ -673,7 +766,7 @@ To switch the OCR model:
 
 Keep model tags exact. `qwen2.5:14b-instruct` and `qwen2.5:latest` are different models.
 
-## 17. Useful Commands
+## 18. Useful Commands
 
 Start GPU Ollama:
 
@@ -724,7 +817,7 @@ Run gateway verification:
 bash scripts/verify_gateway.sh
 ```
 
-## 18. Troubleshooting
+## 19. Troubleshooting
 
 ### `docker compose up -d ollama` fails with a GPU error
 
@@ -856,7 +949,7 @@ OLLAMA_LOAD_TIMEOUT=10m
 
 This avoids keeping the text model and OCR model in VRAM at the same time on a 16 GB GPU.
 
-## 19. Artifact Locations
+## 20. Artifact Locations
 
 | Artifact | Path |
 |---|---|

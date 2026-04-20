@@ -6,7 +6,7 @@ Manumission App is an end-to-end modular Flask application for extracting inform
 
 The system has been refactored from monolithic Python scripts into modular services. Each module can run independently, be tested independently, and be visualized through its own UI.
 
-Current completed runtime target: M2 / Phase 2.3. Ollama gateway is available; `pdf_ingest` can upload or register PDFs, render page PNGs, write manifests, and show thumbnails at `http://127.0.0.1:5102/ingest/`; `normalizer` can demonstrate name, place, date, evidence, name comparison, and place dedupe rules at `http://127.0.0.1:5108/normalizer/`; `aggregator` can write final CSVs and preview/download them at `http://127.0.0.1:5109/aggregate/`.
+Current completed runtime target: M3 / Phase 3. Ollama gateway is available; `pdf_ingest` can upload or register PDFs, render page PNGs, write manifests, and show thumbnails at `http://127.0.0.1:5102/ingest/`; `normalizer` can demonstrate name, place, date, evidence, name comparison, and place dedupe rules at `http://127.0.0.1:5108/normalizer/`; `aggregator` can write final CSVs and preview/download them at `http://127.0.0.1:5109/aggregate/`; `ocr` can preview preprocessing and run OCR into `data/ocr_text/<doc_id>/` at `http://127.0.0.1:5103/ocr/` when the OCR model is available.
 
 ## Architecture
 
@@ -40,9 +40,10 @@ The system consists of the following modules:
    cd manumission_app
    ```
 
-2. Seed the model (internet access is required the first time):
+2. Seed the models (internet access is required the first time):
    ```bash
    ./scripts/seed_model.sh qwen2.5:14b-instruct
+   ./scripts/seed_model.sh glm-ocr:latest
    ```
 
 3. Start the services:
@@ -92,6 +93,20 @@ Then open:
 ```text
 http://127.0.0.1:5109/aggregate/
 ```
+
+To run the current OCR UI:
+
+```bash
+docker compose --profile ocr up -d --build ocr
+```
+
+Then open:
+
+```text
+http://127.0.0.1:5103/ocr/
+```
+
+The preprocessing preview works without a live OCR model call. Full OCR requires `glm-ocr:latest` to be present in runtime Ollama.
 
 ## Usage
 

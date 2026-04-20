@@ -167,6 +167,8 @@ Milestone M2: three modules can run independently and each has a visible UI. Oll
 
 OCR is the first LLM module and the heaviest vision-processing stage, so it gets its own phase.
 
+Status: implemented on 2026-04-20. The module exposes preprocessing, single-page OCR, whole-folder OCR, status, debug, and text routes under `/ocr/*`; has a CLI; and has a standalone UI at `http://127.0.0.1:5103/ocr/` when started with the `ocr` profile.
+
 ### Tasks
 
 - Split image preprocessing from `glm_ocr_ollama.py` into `preprocessing.py`: `enhance_gray`, `deskew`, `crop_foreground`, `split_vertical_with_overlap`.
@@ -184,11 +186,37 @@ OCR is the first LLM module and the heaviest vision-processing stage, so it gets
 
 ### Verification
 
+Implemented verification:
+
+```bash
+docker build -f docker/ocr.Dockerfile -t manumission-ocr:phase3 .
+docker run --rm manumission-ocr:phase3 python -m unittest discover -s /app/modules/ocr/tests -p "test_*.py"
+docker compose --profile ocr up -d --build ocr
+curl http://127.0.0.1:5103/healthz
+```
+
+Preprocessing UI smoke test:
+
+```bash
+curl -X POST http://127.0.0.1:5103/ocr/preview/upload_fixture/1 \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+Expected highlight: the response contains five base64 images for original, enhanced, deskewed, cropped, and tile preview.
+
+Full OCR smoke test with the OCR vision model:
+
 ```bash
 docker compose run --rm ocr python -m modules.ocr.cli \
-  --in_dir /data/pages/myDoc --out_dir /data/ocr_text/myDoc \
-  --model glm-ocr:latest
+  --in_dir /data/pages/upload_fixture --out_dir /data/ocr_text/upload_fixture \
+  --model glm-ocr:latest \
+  --ollama_url http://ollama:11434/api/generate \
+  --no_debug \
+  --max_new_tokens 1200
 ```
+
+Expected output: `data/ocr_text/upload_fixture/manifest.json` reports `status: complete`, `completed_pages: 2`, and writes `p001.txt` plus `p002.txt`.
 
 Then open the OCR UI, click a page, and visually inspect preprocessing artifacts and OCR output.
 
@@ -378,10 +406,11 @@ The project is split into seven phases, each with a clear demoable result. This 
 
 ### M3 OCR
 
-- [ ] OCR UI shows the five-step preprocessing strip for a selected page.
-- [ ] Whole-folder OCR runs and writes to `data/ocr_text/`.
-- [ ] OCR text files are visible in the UI and reused by downstream modules.
-- [ ] Resume behavior works.
+- [x] OCR UI shows the five-step preprocessing strip for a selected page.
+- [x] Whole-folder OCR code path writes to `data/ocr_text/` and is covered by mocked unit tests.
+- [x] OCR text files are visible in the UI and exposed through `/ocr/text/<doc_id>/<page>`.
+- [x] Resume behavior works.
+- [x] Full OCR smoke test with `glm-ocr:latest` downloaded and loaded in runtime Ollama.
 
 ### M4 Four NER Modules
 

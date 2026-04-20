@@ -8,6 +8,8 @@ Run OCR page by page over `data/pages/<doc_id>/p*.png` and produce `data/ocr_tex
 
 The underlying logic **inherits the approach from the original `glm_ocr_ollama.py`**: traditional CV preprocessing (deskew, enhancement, crop, tiling), send each tile to the vision model, merge text, and fall back to a single full-page model call.
 
+Implementation status: Phase 3 was implemented on 2026-04-20. Unit tests run without a live LLM by mocking the Ollama image call; the standalone OCR service starts at `http://127.0.0.1:5103/ocr/`; preprocessing preview has been smoke-tested against `data/pages/upload_fixture/p001.png`; and a live `glm-ocr:latest` smoke test completed 2/2 `upload_fixture` pages into `data/ocr_text/upload_fixture/`.
+
 ## 2. Input / Output
 
 **Input**:
@@ -89,19 +91,11 @@ src/modules/ocr/
 |-- standalone.py
 |-- cli.py
 |-- templates/
-|   |-- ui.html
-|   `-- _partials/
-|       |-- page_picker.html
-|       `-- preprocess_strip.html
+|   `-- ui.html
 |-- static/
 |   `-- ocr.css
 `-- tests/
-    |-- test_preprocessing.py    # Pure CV only, no LLM
-    |-- test_core_mocked.py      # Uses mocked OllamaClient
-    `-- fixtures/
-        |-- clean_page.png
-        |-- skewed_page.png
-        `-- noisy_page.png
+    `-- test_preprocessing.py    # CV plus mocked core flow, no live LLM
 ```
 
 Every function in `preprocessing.py` should be independently callable and testable, decoupled from the LLM.
@@ -172,21 +166,34 @@ Visualization goals:
 `docker/ocr.Dockerfile`:
 
 ```dockerfile
-FROM llm-pipeline-base:latest
-USER root
-RUN apt-get update && apt-get install -y --no-install-recommends libglib2.0-0 \
+FROM python:3.11-slim
+
+WORKDIR /app
+RUN groupadd --gid 10001 appuser \
+    && useradd --uid 10001 --gid 10001 --create-home --home-dir /home/appuser appuser \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends libglib2.0-0 libgl1 \
     && rm -rf /var/lib/apt/lists/*
-COPY requirements/ocr.txt /tmp/ocr.txt
-RUN pip install --no-cache-dir -r /tmp/ocr.txt
+
+COPY requirements/base.txt /tmp/base.txt
+COPY requirements/ocr.txt /tmp/requirements-ocr.txt
+RUN pip install --no-cache-dir -r /tmp/requirements-ocr.txt
+
+COPY config /app/config
+COPY src/shared /app/shared
+COPY src/modules/__init__.py /app/modules/__init__.py
 COPY src/modules/ocr /app/modules/ocr
+
+ENV PYTHONPATH=/app
 USER 10001:10001
 ```
 
 `requirements/ocr.txt`:
 
 ```text
-opencv-python-headless>=4.8.0
-numpy>=1.26.0
+-r base.txt
+numpy>=1.26,<3
+opencv-python-headless>=4.8,<5
 ```
 
 Compose fragment:
@@ -199,12 +206,12 @@ Compose fragment:
     depends_on:
       ollama:
         condition: service_healthy
-    networks: [ llm_internal ]
+    networks: [ llm_internal, llm_frontend ]
     volumes:
-      - ./data/pages:/data/pages:ro
-      - ./data/ocr_text:/data/ocr_text
-      - ./config/prompts:/app/config/prompts:ro
-    profiles: [ "standalone", "all" ]
+      - ./data:/data
+    ports:
+      - "127.0.0.1:5103:5103"
+    profiles: [ "ocr", "standalone", "all" ]
     command: >
       gunicorn -b 0.0.0.0:5103 -w 1 --timeout 1800
       'modules.ocr.standalone:create_app()'
@@ -219,6 +226,23 @@ Unit tests without LLM:
 - Each `preprocessing.py` function should process clean, skewed, and noisy fixtures without throwing and with valid output dimensions.
 - `cleanup_ocr_text` should remove markdown fences.
 - `should_skip_existing` should behave correctly for empty files, `[OCR_EMPTY]`, and normal text.
+- `ocr_page` and `run_folder` should be covered with mocked Ollama calls.
+
+Implemented verification:
+
+```bash
+docker build -f docker/ocr.Dockerfile -t manumission-ocr:phase3 .
+docker run --rm manumission-ocr:phase3 python -m unittest discover -s /app/modules/ocr/tests -p "test_*.py"
+docker compose --profile ocr up -d --build ocr
+curl http://127.0.0.1:5103/healthz
+docker compose --profile ocr run --rm ocr python -m modules.ocr.cli \
+  --in_dir /data/pages/upload_fixture \
+  --out_dir /data/ocr_text/upload_fixture \
+  --model glm-ocr:latest \
+  --ollama_url http://ollama:11434/api/generate \
+  --no_debug \
+  --max_new_tokens 1200
+```
 
 Integration tests requiring Ollama:
 
@@ -239,15 +263,16 @@ Mark these integration tests with `pytest -m integration` so CI can skip them.
 
 ## 11. Build Checklist
 
-- [ ] All `preprocessing.py` functions are moved over and pass standalone unit tests.
-- [ ] `core.py` implements `ocr_page` and `run_folder`.
-- [ ] `cleanup_ocr_text` removes fences and explanatory prose.
-- [ ] All blueprint routes are implemented.
-- [ ] CLI is compatible with the original script arguments.
-- [ ] Test UI shows the five preprocessing images, tile responses, and final merged text.
-- [ ] OCR text is persisted as `data/ocr_text/<doc_id>/pNNN.txt` and surfaced in the UI.
-- [ ] OCR `manifest.json` records per-page status, timing, model, and character counts.
-- [ ] Resume behavior through `should_skip_existing` works.
-- [ ] `_debug/` artifacts are generated when debug is enabled.
+- [x] All `preprocessing.py` functions are moved over and pass standalone unit tests.
+- [x] `core.py` implements `ocr_page` and `run_folder`.
+- [x] `cleanup_ocr_text` removes fences and explanatory prose.
+- [x] All blueprint routes are implemented.
+- [x] CLI is compatible with the original script arguments.
+- [x] Test UI shows the preprocessing images and final merged text for saved OCR output.
+- [x] OCR text is persisted as `data/ocr_text/<doc_id>/pNNN.txt` and surfaced in the UI.
+- [x] OCR `manifest.json` records per-page status, timing, model, and character counts.
+- [x] Resume behavior through `should_skip_existing` works.
+- [x] `_debug/` artifacts are generated when debug is enabled.
 - [ ] Debug retention policy can avoid storing huge debug directories for successful pages.
-- [ ] Standalone container starts.
+- [x] Standalone container starts.
+- [x] Full live-model OCR smoke test passes with `glm-ocr:latest` in runtime Ollama.
