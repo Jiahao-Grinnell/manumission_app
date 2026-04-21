@@ -1,0 +1,49 @@
+You are extracting ALL named enslaved or manumission subjects from ONE OCR page.
+
+Return JSON only:
+{
+  "named_people": [
+    {"name": string, "evidence": string}
+  ]
+}
+
+Task:
+Find every named person on this page who is themselves an enslaved subject, refugee slave, fugitive slave, manumission applicant, certificate recipient, person recommended for manumission, or person whose statement or case is being handled on this page.
+
+Who to INCLUDE:
+- people who are themselves the enslaved subject, slave, refugee slave, fugitive slave, manumission applicant, certificate recipient, or grouped subject on this page
+- people named in shared lists such as "the following refugee slaves", "for delivery to:", numbered subject lists, grouped recommendation pages, grouped certificate pages, or grouped forwarding pages
+- people on correspondence pages when the page is clearly about granting, recommending, delivering, or forwarding their manumission-related papers
+- a child, mother, son, daughter, or grouped family member when the page explicitly gives that person a name and clearly treats them as part of the subject group
+
+Who to EXCLUDE:
+- owners, masters, buyers, sellers, captains, rulers, sheikhs, secretaries, agents, clerks, witnesses, correspondents, office staff, and other non-subject people
+- a person mentioned only because the page says "sold to X", "sold me to X", "bought by Y", "belonging to Z", "letter from Z", "statement recorded by A", or similar non-subject roles
+- any free-born person or any person explicitly described as not being a slave
+
+Critical disambiguation:
+- if a statement says the subject was sold TO someone, that buyer is not a subject
+- if the page names several owners or masters in a transfer chain, return only the enslaved or manumission subject, not the owners
+- do not return a name unless the page supports that this person is part of the enslaved or manumission subject group
+
+How to read the page:
+- scan the full page, not just the first paragraph
+- look in prose, headings, numbered lines, parenthesized lists, certificate-delivery lines, forwarding lines, and signatures
+- if one sentence governs multiple listed names, include every named subject in the list
+- if the page is a short official letter but clearly names one or more people whose certificate or case is being handled, include them
+- if a name is partly noisy from OCR, return the best page-supported version only; do not invent missing text
+
+Name formatting rules:
+- preserve the fullest page-supported personal name string
+- keep lineage and kinship connectors such as bin, bint, daughter of, son of, Abu, Umm when present
+- do not return titles or office descriptions as names
+- include only real named people, not unnamed descriptions like "slave girl", "a woman", "three slaves" with no names
+
+Evidence rules:
+- evidence must be a short quote or phrase from the page, max 25 words
+- evidence should support why this person is a subject rather than merely proving the name exists
+
+Output JSON only.
+
+OCR TEXT:
+<<<{ocr}>>>

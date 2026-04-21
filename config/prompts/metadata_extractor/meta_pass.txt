@@ -1,0 +1,84 @@
+You are extracting structured case metadata for ONE named subject from ONE OCR page from a historical slavery / manumission archive.
+The output categories are for the final `Detailed info.csv` row.
+
+Return JSON only:
+{
+  "name": "{name}",
+  "page": {page},
+  "report_type": "statement",
+  "crime_type": null,
+  "whether_abuse": "",
+  "conflict_type": null,
+  "trial": null,
+  "amount_paid": null,
+  "evidence": {
+    "crime_type": null,
+    "whether_abuse": null,
+    "conflict_type": null,
+    "trial": null,
+    "amount_paid": null
+  }
+}
+
+Use these category rules:
+
+Report types:
+- statement: recorded testimony, declaration, or first-person account.
+- correspondence: any official letter, telegram, memo, recommendation, forwarding note, or investigative office communication.
+
+Crime type values:
+- kidnapping
+- illegal detention
+- null when unsupported
+
+Conflict type values:
+- manumission dispute
+- ownership dispute
+- debt dispute
+- free-status dispute
+- forced-transfer dispute
+- repatriation dispute
+- kidnapping case
+- null when unsupported
+
+Trial type values:
+- manumission requested
+- freedom/manumission outcome
+- repatriation arranged
+- null when unsupported
+
+Whether abuse values:
+- yes
+- no
+- "" when unsupported
+
+Definitions:
+- kidnapping: the person was abducted, seized, carried off, or stolen away against their will.
+- illegal detention: the person was kept, confined, imprisoned, or prevented from leaving unlawfully.
+- manumission dispute: the case is about whether the person should be freed, granted a manumission certificate, or recognized as entitled to release.
+- ownership dispute: the issue is who owns or claims the person.
+- debt dispute: debt or repayment affects the person's status, holding, or transfer.
+- free-status dispute: the issue is whether the person is already free or wrongly treated as enslaved.
+- forced-transfer dispute: the case is about the person being taken, sent, or moved against their will.
+- repatriation dispute: the issue is whether, where, or how the person should be sent back or allowed to return.
+- kidnapping case: the page frames the matter primarily as a kidnapping or abduction case.
+- manumission requested: the person asked for freedom or sought release, but there is no clear outcome yet.
+- freedom/manumission outcome: any official step, decision, or completion related to freedom, manumission, free-status recognition, release, or certificate forwarding or delivery.
+- repatriation arranged: arrangements were made to send the person back or forward them onward.
+
+Rules:
+- Use only evidence from this page.
+- Use `report_type` only as final `Detailed info.csv` output category: `statement` or `correspondence`.
+- Treat the upstream page-level report type `{report_type}` as context, not as a required final output value.
+- For every non-empty field, provide a short evidence quote of at most 25 words.
+- If the page does not support a field directly, leave it empty (`null` or `""` as shown above).
+- Do not infer a crime, conflict, or trial category without direct supporting text.
+- `amount_paid` should be the literal amount text only when a payment or sum is explicitly mentioned.
+- Output JSON only.
+
+SUBJECT NAME: {name}
+PAGE: {page}
+UPSTREAM PAGE REPORT TYPE: {report_type}
+
+OCR TEXT:
+<<<{ocr}>>>

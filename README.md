@@ -6,7 +6,7 @@ Manumission App is an end-to-end modular Flask application for extracting inform
 
 The system has been refactored from monolithic Python scripts into modular services. Each module can run independently, be tested independently, and be visualized through its own UI.
 
-Current completed runtime target: M3 / Phase 3. Ollama gateway is available; `pdf_ingest` can upload or register PDFs, render page PNGs, write manifests, and show thumbnails at `http://127.0.0.1:5102/ingest/`; `normalizer` can demonstrate name, place, date, evidence, name comparison, and place dedupe rules at `http://127.0.0.1:5108/normalizer/`; `aggregator` can write final CSVs and preview/download them at `http://127.0.0.1:5109/aggregate/`; `ocr` can preview preprocessing and run OCR into `data/ocr_text/<doc_id>/` at `http://127.0.0.1:5103/ocr/` when the OCR model is available.
+Current completed runtime target: M4 / Phase 4.3. Ollama gateway is available; `pdf_ingest` can upload or register PDFs, render page PNGs, write manifests, and show thumbnails at `http://127.0.0.1:5102/ingest/`; `normalizer` can demonstrate name, place, date, evidence, name comparison, and place dedupe rules at `http://127.0.0.1:5108/normalizer/`; `aggregator` can write final CSVs and preview/download them at `http://127.0.0.1:5109/aggregate/`; `ocr` can preview preprocessing and run OCR into `data/ocr_text/<doc_id>/` at `http://127.0.0.1:5103/ocr/` when the OCR model is available; `page_classifier` can classify OCR pages, show regex override hints, and persist `pNNN.classify.json` files at `http://127.0.0.1:5104/classify/`; `name_extractor` can run the five-stage subject-name pipeline, persist `pNNN.names.json`, explain dropped candidates, and rerun one downstream stage at `http://127.0.0.1:5105/names/`; and `metadata_extractor` can extract one validated `Detailed info.csv` row per named person, persist `pNNN.meta.json`, and inspect field-level evidence at `http://127.0.0.1:5106/meta/`.
 
 ## Architecture
 
@@ -107,6 +107,48 @@ http://127.0.0.1:5103/ocr/
 ```
 
 The preprocessing preview works without a live OCR model call. Full OCR requires `glm-ocr:latest` to be present in runtime Ollama.
+
+To run the current page classifier UI:
+
+```bash
+docker compose --profile classifier up -d --build page_classifier
+```
+
+Then open:
+
+```text
+http://127.0.0.1:5104/classify/
+```
+
+The page classifier reads from `data/ocr_text/<doc_id>/`, writes to `data/intermediate/<doc_id>/`, and supports both single-page and whole-document runs.
+
+To run the current name extractor UI:
+
+```bash
+docker compose --profile names up -d --build name_extractor
+```
+
+Then open:
+
+```text
+http://127.0.0.1:5105/names/
+```
+
+The name extractor reads OCR text from `data/ocr_text/<doc_id>/` plus classifier results from `data/intermediate/<doc_id>/pNNN.classify.json`, writes `pNNN.names.json`, and preserves every pipeline stage for debugging. The UI does not accept freeform `doc_id` entry: it auto-lists only documents that have at least one page with `should_extract=true`. If a document is missing from the dropdown, run the page classifier on that document first and make sure at least one page was kept for extraction.
+
+To run the current metadata extractor UI:
+
+```bash
+docker compose --profile meta up -d --build metadata_extractor
+```
+
+Then open:
+
+```text
+http://127.0.0.1:5106/meta/
+```
+
+The metadata extractor reads OCR text from `data/ocr_text/<doc_id>/`, page-classifier results from `data/intermediate/<doc_id>/pNNN.classify.json`, and name results from `data/intermediate/<doc_id>/pNNN.names.json`. It writes `pNNN.meta.json`, stores one row per named person for `Detailed info.csv`, and keeps validation plus evidence alongside each extracted field for debugging.
 
 ## Usage
 

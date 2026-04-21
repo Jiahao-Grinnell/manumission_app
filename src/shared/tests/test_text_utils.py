@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from shared.text_utils import clean_ocr, extract_json, normalize_ws, strip_accents
+from shared.text_utils import clean_ocr, extract_json, normalize_ws, render_prompt, strip_accents
 
 
 class TextUtilsTests(unittest.TestCase):
@@ -28,7 +28,16 @@ class TextUtilsTests(unittest.TestCase):
     def test_extract_returns_none_for_missing_json(self) -> None:
         self.assertIsNone(extract_json("no structured payload here"))
 
+    def test_render_prompt_replaces_named_placeholder(self) -> None:
+        self.assertEqual(render_prompt("hello {name}", name="world"), "hello world")
+
+    def test_render_prompt_leaves_literal_json_braces_intact(self) -> None:
+        template = 'Return JSON only:\n{"ok": true, "text": "{ocr}"}'
+        self.assertEqual(
+            render_prompt(template, ocr="sample"),
+            'Return JSON only:\n{"ok": true, "text": "sample"}',
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
-

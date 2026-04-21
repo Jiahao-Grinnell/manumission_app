@@ -83,7 +83,7 @@ Key design points:
   - `derived_from_doc`: derived from the document date at the top of the page.
   - `unknown` / "" means unknown.
 
-Load prompts from `config/prompts/place_pass.txt`, `place_verify.txt`, and `place_date_enrich.txt`.
+Load prompts from `config/prompts/place_extractor/place_pass.txt`, `place_verify.txt`, and `place_date_enrich.txt`.
 
 ## 4. Directory Structure
 

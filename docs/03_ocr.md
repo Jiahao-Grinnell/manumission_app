@@ -69,7 +69,7 @@ page.png
   v if still empty: write "[OCR_EMPTY]"
 ```
 
-Move the original OCR prompt into `config/prompts/ocr.txt` unchanged:
+Move the original OCR prompt into `config/prompts/ocr/ocr.txt` unchanged:
 
 ```text
 You are an OCR engine. Transcribe ALL visible text from the image.

@@ -1,0 +1,404 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Page Classifier</title>
+    <link rel="stylesheet" href="{{ url_for('page_classifier.static', filename='page_classifier.css') }}">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">Module 04</p>
+          <h1>Page Classifier</h1>
+          <p>Review OCR text, classify one page at a time, and inspect how regex overrides and skip hints compare with the model verdict.</p>
+        </div>
+        <div class="actions">
+          <button id="run-single">Classify This Page</button>
+          <button class="secondary" id="run-all">Classify Whole Doc</button>
+        </div>
+      </header>
+
+      <section class="controls">
+        <label>
+          Document
+          <select id="doc-select">
+            {% if not docs %}
+              <option value="">No OCR docs found</option>
+            {% endif %}
+            {% for doc in docs %}
+              <option value="{{ doc.doc_id }}" {% if selected_doc_id == doc.doc_id %}selected{% endif %}>
+                {{ doc.doc_id }} - {{ doc.classified_pages }}/{{ doc.pages }} classified
+              </option>
+            {% endfor %}
+          </select>
+        </label>
+
+        <label>
+          Page
+          <select id="page-select">
+            {% if not pages %}
+              <option value="">No OCR pages</option>
+            {% endif %}
+            {% for page in pages %}
+              <option value="{{ page.page }}" {% if selected_page == page.page %}selected{% endif %}>
+                p{{ "%03d"|format(page.page) }}{% if page.report_type %} - {{ page.report_type }}{% endif %}
+              </option>
+            {% endfor %}
+          </select>
+        </label>
+
+        <label>
+          Forced Report Type
+          <select id="report-type">
+            <option value="">Model decide</option>
+            <option value="statement">statement</option>
+            <option value="correspondence">correspondence</option>
+          </select>
+        </label>
+
+        <label>
+          Model
+          <input id="model-input" placeholder="Optional override, e.g. qwen2.5:14b-instruct">
+        </label>
+      </section>
+
+      <div class="status-strip" id="status-line"></div>
+
+      <section class="grid">
+        <article class="card source-panel">
+          <header>
+            <div>
+              <h2>OCR Text With Evidence</h2>
+              <p id="source-subtitle">Select a page to inspect.</p>
+            </div>
+          </header>
+          <pre id="source-html">{% if initial_page_data %}{{ initial_page_data.source_html|safe }}{% else %}No OCR text loaded yet.{% endif %}</pre>
+        </article>
+
+        <div class="stack">
+          <article class="card">
+            <header>
+              <div>
+                <h2>Verdict</h2>
+                <p id="verdict-subtitle">Current page outcome.</p>
+              </div>
+              <span class="badge badge-correspondence" id="report-badge">Waiting</span>
+            </header>
+            <div class="card-body">
+              <div class="metric-grid">
+                <div class="metric">
+                  <span>Should Extract</span>
+                  <strong id="metric-extract">-</strong>
+                </div>
+                <div class="metric">
+                  <span>Skip Reason</span>
+                  <strong id="metric-skip">-</strong>
+                </div>
+                <div class="metric">
+                  <span>Model Calls</span>
+                  <strong id="metric-model">0</strong>
+                </div>
+                <div class="metric">
+                  <span>Repair Calls</span>
+                  <strong id="metric-repair">0</strong>
+                </div>
+              </div>
+              <div class="meta-line">
+                <span id="metric-elapsed">Elapsed: -</span>
+                <span id="metric-ocr">OCR chars: -</span>
+                <span id="metric-locate">Evidence located: -</span>
+              </div>
+              <div class="evidence">
+                <strong>Evidence</strong>
+                <p id="metric-evidence">No result yet.</p>
+              </div>
+            </div>
+          </article>
+
+          <article class="card">
+            <header>
+              <div>
+                <h2>Rule Comparison</h2>
+                <p id="override-summary">Regex and heuristic signals for this page.</p>
+              </div>
+            </header>
+            <div class="card-body">
+              <table class="hint-table">
+                <thead>
+                  <tr>
+                    <th>Rule</th>
+                    <th>Match</th>
+                    <th>Excerpt</th>
+                  </tr>
+                </thead>
+                <tbody id="hint-rows">
+                  <tr><td colspan="3">No rule data yet.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </article>
+
+          <article class="card raw-panel">
+            <header>
+              <div>
+                <h2>Raw Model JSON</h2>
+                <p>Stored parsed payload before the final regex override is applied.</p>
+              </div>
+            </header>
+            <pre id="raw-json">{% if initial_page_data and initial_page_data.result %}{{ initial_page_data.result.raw_decision|tojson(indent=2) }}{% else %}No result yet.{% endif %}</pre>
+          </article>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      const initialData = {{ (initial_page_data or {}) | tojson }};
+      const docsSelect = document.getElementById("doc-select");
+      const pageSelect = document.getElementById("page-select");
+      const reportTypeSelect = document.getElementById("report-type");
+      const modelInput = document.getElementById("model-input");
+      const runSingleButton = document.getElementById("run-single");
+      const runAllButton = document.getElementById("run-all");
+      const statusLine = document.getElementById("status-line");
+      const sourceHtml = document.getElementById("source-html");
+      const sourceSubtitle = document.getElementById("source-subtitle");
+      const reportBadge = document.getElementById("report-badge");
+      const metricExtract = document.getElementById("metric-extract");
+      const metricSkip = document.getElementById("metric-skip");
+      const metricModel = document.getElementById("metric-model");
+      const metricRepair = document.getElementById("metric-repair");
+      const metricElapsed = document.getElementById("metric-elapsed");
+      const metricOcr = document.getElementById("metric-ocr");
+      const metricLocate = document.getElementById("metric-locate");
+      const metricEvidence = document.getElementById("metric-evidence");
+      const hintRows = document.getElementById("hint-rows");
+      const rawJson = document.getElementById("raw-json");
+      const overrideSummary = document.getElementById("override-summary");
+      const verdictSubtitle = document.getElementById("verdict-subtitle");
+
+      const HINT_LABELS = {
+        statement_report: "Statement pattern",
+        correspondence_report: "Correspondence pattern",
+        index_skip_hint: "Index skip hint",
+        record_metadata_skip_hint: "Record metadata hint",
+        bad_ocr_skip_hint: "Bad OCR hint",
+      };
+
+      function selectedDoc() {
+        return docsSelect.value;
+      }
+
+      function selectedPage() {
+        return pageSelect.value;
+      }
+
+      function requestPayload() {
+        const body = {};
+        if (reportTypeSelect.value) {
+          body.report_type = reportTypeSelect.value;
+        }
+        if (modelInput.value.trim()) {
+          body.model = modelInput.value.trim();
+        }
+        return body;
+      }
+
+      function setBusy(button, busy, label) {
+        button.disabled = busy;
+        button.textContent = label;
+      }
+
+      async function loadPages(docId, preferredPage = "") {
+        if (!docId) {
+          pageSelect.innerHTML = '<option value="">No OCR pages</option>';
+          return;
+        }
+        const response = await fetch(`/classify/pages/${encodeURIComponent(docId)}`);
+        const data = await response.json();
+        pageSelect.innerHTML = "";
+        if (!data.pages.length) {
+          pageSelect.innerHTML = '<option value="">No OCR pages</option>';
+          return;
+        }
+        for (const page of data.pages) {
+          const option = document.createElement("option");
+          option.value = String(page.page);
+          option.textContent = `p${String(page.page).padStart(3, "0")}${page.report_type ? ` - ${page.report_type}` : ""}`;
+          if (preferredPage && String(page.page) === String(preferredPage)) {
+            option.selected = true;
+          }
+          pageSelect.appendChild(option);
+        }
+      }
+
+      async function loadResult(docId, page) {
+        if (!docId || !page) {
+          renderPayload({});
+          return;
+        }
+        statusLine.textContent = `Loading ${docId} p${String(page).padStart(3, "0")}...`;
+        const response = await fetch(`/classify/result/${encodeURIComponent(docId)}/${page}`);
+        if (!response.ok) {
+          statusLine.textContent = "Could not load page data.";
+          renderPayload({});
+          return;
+        }
+        renderPayload(await response.json());
+        statusLine.textContent = `Viewing ${docId} p${String(page).padStart(3, "0")}.`;
+      }
+
+      function renderPayload(payload) {
+        const result = payload.result || null;
+        sourceHtml.innerHTML = payload.source_html || "No OCR text loaded yet.";
+        sourceSubtitle.textContent = payload.doc_id ? `${payload.doc_id} - p${String(payload.page).padStart(3, "0")}` : "Select a page to inspect.";
+        metricOcr.textContent = `OCR chars: ${payload.ocr_char_count ?? "-"}`;
+        metricLocate.textContent = `Evidence located: ${payload.evidence_located ? "yes" : "no"}`;
+
+        if (!result) {
+          reportBadge.textContent = "No Result";
+          reportBadge.className = "badge badge-correspondence";
+          metricExtract.textContent = "-";
+          metricSkip.textContent = "-";
+          metricModel.textContent = "0";
+          metricRepair.textContent = "0";
+          metricElapsed.textContent = "Elapsed: -";
+          metricEvidence.textContent = "Run classification to create a result.";
+          rawJson.textContent = "No result yet.";
+          overrideSummary.textContent = "Regex and heuristic signals will appear after a result is available.";
+          verdictSubtitle.textContent = "Current page outcome.";
+          hintRows.innerHTML = "<tr><td colspan='3'>No rule data yet.</td></tr>";
+          return;
+        }
+
+        const badgeClass = result.should_extract
+          ? (result.report_type === "statement" ? "badge badge-statement" : "badge badge-correspondence")
+          : "badge badge-skip";
+        reportBadge.className = badgeClass;
+        reportBadge.textContent = result.report_type || (result.should_extract ? "extract" : "skip");
+        metricExtract.textContent = result.should_extract ? "YES" : "NO";
+        metricSkip.textContent = result.skip_reason || "-";
+        metricModel.textContent = String(result.model_calls ?? 0);
+        metricRepair.textContent = String(result.repair_calls ?? 0);
+        metricElapsed.textContent = `Elapsed: ${result.elapsed_seconds ?? "-"}s`;
+        metricEvidence.textContent = result.evidence || "No evidence provided.";
+        rawJson.textContent = JSON.stringify(result.raw_decision || {}, null, 2);
+        verdictSubtitle.textContent = result.initial_decision
+          ? `Model: ${result.initial_decision.report_type || "-"} -> Final: ${result.report_type || "-"}`
+          : "Current page outcome.";
+
+        if (result.override) {
+          const override = result.override;
+          overrideSummary.textContent = override.applied
+            ? `Override applied: ${override.from} -> ${override.to} by ${override.applied_by}.`
+            : (override.applied_by === "forced_report_type"
+                ? `Final report type forced to ${override.to}.`
+                : `No override applied. Final report type stayed ${override.to}.`);
+        } else {
+          overrideSummary.textContent = "Regex and heuristic signals for this page.";
+        }
+
+        const hints = result.rule_hints || {};
+        const rows = Object.entries(HINT_LABELS).map(([key, label]) => {
+          const value = hints[key] || {};
+          const matchClass = value.matched ? "ok" : "miss";
+          const matchText = value.matched ? "matched" : "not matched";
+          const excerpt = value.excerpt ? `<small>${escapeHtml(value.excerpt)}</small>` : "<small>-</small>";
+          return `<tr>
+            <td>${label}</td>
+            <td><span class="${matchClass}">${matchText}</span></td>
+            <td>${excerpt}</td>
+          </tr>`;
+        });
+        hintRows.innerHTML = rows.join("");
+      }
+
+      async function classifySingle() {
+        if (!selectedDoc() || !selectedPage()) {
+          return;
+        }
+        setBusy(runSingleButton, true, "Classifying...");
+        statusLine.textContent = `Running classifier for ${selectedDoc()} p${String(selectedPage()).padStart(3, "0")}...`;
+        const response = await fetch(`/classify/run-single/${encodeURIComponent(selectedDoc())}/${selectedPage()}`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify(requestPayload()),
+        });
+        setBusy(runSingleButton, false, "Classify This Page");
+        if (!response.ok) {
+          statusLine.textContent = "Classification failed.";
+          return;
+        }
+        const payload = await response.json();
+        renderPayload(payload);
+        await loadPages(selectedDoc(), selectedPage());
+        statusLine.textContent = `Saved p${String(selectedPage()).padStart(3, "0")}.classify.json`;
+      }
+
+      async function classifyAll() {
+        if (!selectedDoc()) {
+          return;
+        }
+        setBusy(runAllButton, true, "Running Whole Doc...");
+        statusLine.textContent = `Starting whole-document classification for ${selectedDoc()}...`;
+        const response = await fetch(`/classify/run-all/${encodeURIComponent(selectedDoc())}`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({...requestPayload(), resume: true}),
+        });
+        if (!response.ok) {
+          setBusy(runAllButton, false, "Classify Whole Doc");
+          statusLine.textContent = "Could not start background job.";
+          return;
+        }
+        const job = await response.json();
+        await pollJob(job.job_id);
+      }
+
+      async function pollJob(jobId) {
+        const response = await fetch(`/classify/jobs/${jobId}`);
+        const job = await response.json();
+        if (job.status === "running") {
+          statusLine.textContent = `Job ${jobId} is still running...`;
+          window.setTimeout(() => pollJob(jobId), 1000);
+          return;
+        }
+        setBusy(runAllButton, false, "Classify Whole Doc");
+        if (job.status === "done") {
+          statusLine.textContent = `Whole-document classification finished: ${job.manifest.completed_pages} done, ${job.manifest.skipped_pages} skipped, ${job.manifest.error_pages} errors.`;
+          await loadPages(selectedDoc(), selectedPage());
+          await loadResult(selectedDoc(), selectedPage());
+          return;
+        }
+        statusLine.textContent = `Job failed: ${job.error || "unknown error"}`;
+      }
+
+      function escapeHtml(value) {
+        return String(value)
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;");
+      }
+
+      docsSelect.addEventListener("change", async () => {
+        await loadPages(selectedDoc());
+        await loadResult(selectedDoc(), selectedPage());
+      });
+
+      pageSelect.addEventListener("change", async () => {
+        await loadResult(selectedDoc(), selectedPage());
+      });
+
+      runSingleButton.addEventListener("click", classifySingle);
+      runAllButton.addEventListener("click", classifyAll);
+
+      if (initialData && Object.keys(initialData).length) {
+        renderPayload(initialData);
+        statusLine.textContent = `Viewing ${initialData.doc_id} p${String(initialData.page).padStart(3, "0")}.`;
+      } else {
+        renderPayload({});
+      }
+    </script>
+  </body>
+</html>

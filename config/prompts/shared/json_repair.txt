@@ -1,0 +1,5 @@
+Return only valid JSON matching this schema shape:
+{schema}
+
+TEXT TO FIX:
+<<<{bad}>>>

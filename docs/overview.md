@@ -170,18 +170,25 @@ llm-pipeline/
 |
 |-- config/
 |   |-- prompts/                   # Prompt templates as standalone files
-|   |   |-- page_classify.txt
-|   |   |-- name_pass.txt
-|   |   |-- name_recall.txt
-|   |   |-- name_filter.txt
-|   |   |-- name_verify.txt
-|   |   |-- meta_pass.txt
-|   |   |-- place_pass.txt
-|   |   |-- place_recall.txt
-|   |   |-- place_verify.txt
-|   |   |-- place_date_enrich.txt
-|   |   |-- json_repair.txt
-|   |   `-- ocr.txt
+|   |   |-- shared/
+|   |   |   `-- json_repair.txt
+|   |   |-- ocr/
+|   |   |   `-- ocr.txt
+|   |   |-- page_classifier/
+|   |   |   `-- page_classify.txt
+|   |   |-- name_extractor/
+|   |   |   |-- name_pass.txt
+|   |   |   |-- name_recall.txt
+|   |   |   |-- name_filter.txt
+|   |   |   `-- name_verify.txt
+|   |   |-- metadata_extractor/
+|   |   |   |-- category_guide.txt
+|   |   |   `-- meta_pass.txt
+|   |   `-- place_extractor/
+|   |       |-- place_pass.txt
+|   |       |-- place_recall.txt
+|   |       |-- place_verify.txt
+|   |       `-- place_date_enrich.txt
 |   |-- schemas/                   # CSV column definitions and vocabulary
 |   |   |-- detail.yaml
 |   |   |-- place.yaml
@@ -313,8 +320,8 @@ This is one of the key features of the refactor. Every processing module has a `
 | 02 pdf_ingest | PDF thumbnail grid, page count, dimensions, file size summary |
 | 03 ocr | Original image -> grayscale/enhanced -> deskew -> crop -> tiles; OCR text alignment; raw model response JSON |
 | 04 page_classifier | Full OCR text, classification badges, highlighted evidence, raw responses |
-| 05 name_extractor | Highlighted people in text, pass1/recall/filter/verify side-by-side, removed-candidate reasons |
-| 06 metadata_extractor | One card per person with field-level evidence linked to source text |
+| 05 name_extractor | Highlighted final and dropped names, five-stage cards with prompt/response inspection, removed-candidate reasons, rerun-stage controls |
+| 06 metadata_extractor | Field cards with paired evidence, OCR highlighting, validation statuses, and prompt/response inspection for one selected person |
 | 07 place_extractor | Ordered place path, highlighted evidence for each place, date-confidence blocks |
 | 08 normalizer | Enter arbitrary names, places, dates, or text and see normalized output plus matched rules |
 | 09 aggregator | Current CSV table preview, diff view for newly added rows, statistics panel |

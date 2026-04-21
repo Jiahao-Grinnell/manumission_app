@@ -138,15 +138,15 @@ python -m modules.aggregator.cli \
 |                                                                      |
 |  Report type distribution          Crime type distribution           |
 |  statement: 68                     kidnapping: 54                    |
-|  transport/admin: 41               trafficking: 23                   |
-|  correspondence: 28                illegal detention: 12             |
+|  transport/admin: 41               illegal detention: 23             |
+|  correspondence: 28                (empty): 12                       |
 +----------------------------------------------------------------------+
 |  [ Detailed info.csv ] [ name place.csv ] [ run_status.csv ]         |
 |  Filter: [ _________________________ ]                               |
 |                                                                      |
 |  Name              Page Report    Crime      Abuse Trial       Amt   |
 |  Mariam bint Yusuf 12   statement kidnapping yes   manu...           |
-|  Ahmad bin Said    14   statement sale             released          |
+|  Ahmad bin Said    14   correspondence illegal...     freedom...     |
 |  ...                                                                 |
 |  prev 25 | showing 1-25 of 142 | next 25                             |
 +----------------------------------------------------------------------+

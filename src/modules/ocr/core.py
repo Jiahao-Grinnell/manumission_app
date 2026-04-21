@@ -12,6 +12,7 @@ import cv2
 import requests
 
 from shared.config import settings
+from shared.prompt_loader import load_prompt_text
 from shared.storage import write_json_atomic
 
 from .preprocessing import b64_png, preprocess_page
@@ -49,10 +50,12 @@ def _utc_now() -> str:
 def load_prompt(prompt: str | None = None) -> str:
     if prompt:
         return prompt
-    path = settings.PROMPT_DIR / "ocr.txt"
-    if path.exists():
-        return path.read_text(encoding="utf-8").strip()
-    return DEFAULT_OCR_PROMPT
+    return load_prompt_text(
+        "ocr",
+        "ocr.txt",
+        legacy_names=["ocr.txt"],
+        fallback_text=DEFAULT_OCR_PROMPT,
+    )
 
 
 def cleanup_ocr_text(text: str) -> str:

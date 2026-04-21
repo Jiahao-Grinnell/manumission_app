@@ -1,0 +1,459 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Name Extractor</title>
+    <link rel="stylesheet" href="{{ url_for('name_extractor.static', filename='name_extractor.css') }}">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">Module 05</p>
+          <h1>Name Extractor</h1>
+          <p>Review the full five-stage subject-name pipeline, inspect dropped candidates, and rerun one model stage without recomputing the whole page.</p>
+        </div>
+        <div class="actions">
+          <button id="run-single">Run This Page</button>
+          <button class="secondary" id="rerun-pass">Rerun Stage</button>
+          <button class="secondary" id="run-all">Run Whole Doc</button>
+        </div>
+      </header>
+
+      <section class="controls">
+        <label>
+          Document
+          <select id="doc-select">
+            {% if not docs %}
+              <option value="">No extractable docs found</option>
+            {% endif %}
+            {% for doc in docs %}
+              <option value="{{ doc.doc_id }}" {% if selected_doc_id == doc.doc_id %}selected{% endif %}>
+                {{ doc.doc_id }} - {{ doc.completed_pages }}/{{ doc.pages }} complete
+              </option>
+            {% endfor %}
+          </select>
+        </label>
+
+        <label>
+          Page
+          <select id="page-select">
+            {% if not pages %}
+              <option value="">No extractable pages</option>
+            {% endif %}
+            {% for page in pages %}
+              <option value="{{ page.page }}" {% if selected_page == page.page %}selected{% endif %}>
+                p{{ "%03d"|format(page.page) }} - {{ page.report_type }}
+              </option>
+            {% endfor %}
+          </select>
+        </label>
+
+        <label>
+          Rerun Stage
+          <select id="rerun-select">
+            {% for stage in rerun_allowed %}
+              <option value="{{ stage }}">{{ stage }}</option>
+            {% endfor %}
+          </select>
+        </label>
+
+        <label>
+          Model
+          <input id="model-input" placeholder="Optional override, e.g. qwen2.5:14b-instruct">
+        </label>
+      </section>
+
+      <div class="status-strip" id="status-line"></div>
+
+      <section class="summary-grid">
+        <article class="card">
+          <header>
+            <div>
+              <h2>Final Output</h2>
+              <p id="summary-subtitle">Current final subject list.</p>
+            </div>
+          </header>
+          <div class="card-body">
+            <div class="metric-grid">
+              <div class="metric">
+                <span>Final People</span>
+                <strong id="metric-final">0</strong>
+              </div>
+              <div class="metric">
+                <span>Dropped Candidates</span>
+                <strong id="metric-dropped">0</strong>
+              </div>
+              <div class="metric">
+                <span>Model Calls</span>
+                <strong id="metric-model">0</strong>
+              </div>
+              <div class="metric">
+                <span>Repair Calls</span>
+                <strong id="metric-repair">0</strong>
+              </div>
+            </div>
+            <div class="meta-line">
+              <span id="metric-elapsed">Elapsed: -</span>
+              <span id="metric-report-type">Report type: -</span>
+              <span id="metric-classifier">Classifier evidence: -</span>
+            </div>
+          </div>
+        </article>
+
+        <article class="card">
+          <header>
+            <div>
+              <h2>Final Names</h2>
+              <p>People kept after verify plus the final rule filter.</p>
+            </div>
+          </header>
+          <div class="card-body">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Evidence</th>
+                </tr>
+              </thead>
+              <tbody id="final-rows">
+                <tr><td colspan="2">No result yet.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </article>
+      </section>
+
+      <section class="grid">
+        <article class="card source-panel">
+          <header>
+            <div>
+              <h2>OCR Text</h2>
+              <p id="source-subtitle">Subject names are highlighted in green; dropped names are highlighted in red.</p>
+            </div>
+          </header>
+          <pre id="source-html">{% if initial_page_data %}{{ initial_page_data.source_html|safe }}{% else %}No OCR text loaded yet.{% endif %}</pre>
+        </article>
+
+        <div class="stack">
+          <article class="card">
+            <header>
+              <div>
+                <h2>Stage Flow</h2>
+                <p>Each card shows the input count, output count, fallback state, and parsed model JSON.</p>
+              </div>
+            </header>
+            <div class="card-body stage-grid" id="stage-grid">
+              <div class="empty">Run name extraction to see the five-stage pipeline.</div>
+            </div>
+          </article>
+
+          <article class="card">
+            <header>
+              <div>
+                <h2>Dropped Candidates</h2>
+                <p>Every removed candidate is tagged with the stage and removal reason.</p>
+              </div>
+            </header>
+            <div class="card-body">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Stage</th>
+                    <th>Reason</th>
+                  </tr>
+                </thead>
+                <tbody id="drop-rows">
+                  <tr><td colspan="3">No dropped candidates yet.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </article>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      const initialData = {{ (initial_page_data or {}) | tojson }};
+      const docsSelect = document.getElementById("doc-select");
+      const pageSelect = document.getElementById("page-select");
+      const rerunSelect = document.getElementById("rerun-select");
+      const modelInput = document.getElementById("model-input");
+      const runSingleButton = document.getElementById("run-single");
+      const rerunButton = document.getElementById("rerun-pass");
+      const runAllButton = document.getElementById("run-all");
+      const statusLine = document.getElementById("status-line");
+      const sourceHtml = document.getElementById("source-html");
+      const sourceSubtitle = document.getElementById("source-subtitle");
+      const summarySubtitle = document.getElementById("summary-subtitle");
+      const metricFinal = document.getElementById("metric-final");
+      const metricDropped = document.getElementById("metric-dropped");
+      const metricModel = document.getElementById("metric-model");
+      const metricRepair = document.getElementById("metric-repair");
+      const metricElapsed = document.getElementById("metric-elapsed");
+      const metricReportType = document.getElementById("metric-report-type");
+      const metricClassifier = document.getElementById("metric-classifier");
+      const finalRows = document.getElementById("final-rows");
+      const dropRows = document.getElementById("drop-rows");
+      const stageGrid = document.getElementById("stage-grid");
+
+      function selectedDoc() {
+        return docsSelect.value;
+      }
+
+      function selectedPage() {
+        return pageSelect.value;
+      }
+
+      function requestPayload() {
+        const body = {};
+        if (modelInput.value.trim()) {
+          body.model = modelInput.value.trim();
+        }
+        return body;
+      }
+
+      function setBusy(button, busy, label) {
+        button.disabled = busy;
+        button.textContent = label;
+      }
+
+      async function loadPages(docId, preferredPage = "") {
+        if (!docId) {
+          pageSelect.innerHTML = '<option value="">No extractable pages</option>';
+          return;
+        }
+        const response = await fetch(`/names/pages/${encodeURIComponent(docId)}`);
+        const data = await response.json();
+        pageSelect.innerHTML = "";
+        if (!data.pages.length) {
+          pageSelect.innerHTML = '<option value="">No extractable pages</option>';
+          return;
+        }
+        for (const page of data.pages) {
+          const option = document.createElement("option");
+          option.value = String(page.page);
+          option.textContent = `p${String(page.page).padStart(3, "0")} - ${page.report_type}`;
+          if (preferredPage && String(page.page) === String(preferredPage)) {
+            option.selected = true;
+          }
+          pageSelect.appendChild(option);
+        }
+      }
+
+      async function loadResult(docId, page) {
+        if (!docId || !page) {
+          renderPayload({});
+          return;
+        }
+        statusLine.textContent = `Loading ${docId} p${String(page).padStart(3, "0")}...`;
+        const response = await fetch(`/names/result/${encodeURIComponent(docId)}/${page}`);
+        if (!response.ok) {
+          statusLine.textContent = "Could not load page data.";
+          renderPayload({});
+          return;
+        }
+        renderPayload(await response.json());
+        statusLine.textContent = `Viewing ${docId} p${String(page).padStart(3, "0")}.`;
+      }
+
+      function renderPayload(payload) {
+        const result = payload.result || null;
+        const classify = payload.classify || {};
+        sourceHtml.innerHTML = payload.source_html || "No OCR text loaded yet.";
+        sourceSubtitle.textContent = payload.doc_id
+          ? `${payload.doc_id} - p${String(payload.page).padStart(3, "0")} - ${payload.highlighted_subjects || 0} subject hits, ${payload.highlighted_dropped || 0} dropped hits`
+          : "Subject names are highlighted in green; dropped names are highlighted in red.";
+
+        if (!result) {
+          summarySubtitle.textContent = "Current final subject list.";
+          metricFinal.textContent = "0";
+          metricDropped.textContent = "0";
+          metricModel.textContent = "0";
+          metricRepair.textContent = "0";
+          metricElapsed.textContent = "Elapsed: -";
+          metricReportType.textContent = `Report type: ${classify.report_type || "-"}`;
+          metricClassifier.textContent = `Classifier evidence: ${classify.evidence || "-"}`;
+          finalRows.innerHTML = "<tr><td colspan='2'>No result yet.</td></tr>";
+          dropRows.innerHTML = "<tr><td colspan='3'>No dropped candidates yet.</td></tr>";
+          stageGrid.innerHTML = "<div class='empty'>Run name extraction to see the five-stage pipeline.</div>";
+          return;
+        }
+
+        const finalPeople = result.named_people || [];
+        const removed = result.removed_candidates || [];
+        metricFinal.textContent = String(finalPeople.length);
+        metricDropped.textContent = String(removed.length);
+        metricModel.textContent = String(result.model_calls || 0);
+        metricRepair.textContent = String(result.repair_calls || 0);
+        metricElapsed.textContent = `Elapsed: ${result.elapsed_seconds || "-"}s`;
+        metricReportType.textContent = `Report type: ${result.report_type || classify.report_type || "-"}`;
+        metricClassifier.textContent = `Classifier evidence: ${(result.classify && result.classify.evidence) || classify.evidence || "-"}`;
+        summarySubtitle.textContent = finalPeople.length
+          ? `${finalPeople.length} final subject name(s) survived the full pipeline.`
+          : "No final subject names survived the full pipeline.";
+
+        finalRows.innerHTML = finalPeople.length
+          ? finalPeople.map(item => `<tr><td>${escapeHtml(item.name || "")}</td><td>${escapeHtml(item.evidence || "")}</td></tr>`).join("")
+          : "<tr><td colspan='2'>No final names.</td></tr>";
+
+        dropRows.innerHTML = removed.length
+          ? removed.map(item => `<tr><td>${escapeHtml(item.name || "")}</td><td><span class="tag">${escapeHtml(item.stage || "")}</span></td><td>${escapeHtml(item.reason || "")}${item.excerpt ? `<small>${escapeHtml(item.excerpt)}</small>` : ""}</td></tr>`).join("")
+          : "<tr><td colspan='3'>No dropped candidates.</td></tr>";
+
+        renderStages(result.passes || {});
+      }
+
+      function renderStages(passes) {
+        const stageOrder = ["pass1", "pass1_filter", "recall", "recall_filter", "merged", "verify", "rule_filter"];
+        const cards = stageOrder
+          .filter(key => passes[key])
+          .map(key => {
+            const stage = passes[key];
+            const inputCount = (stage.input_candidates || []).length;
+            const outputCount = (stage.candidates || []).length;
+            const removedCount = (stage.removed || []).length;
+            const fallback = stage.fallback_applied ? `<p class="note">${escapeHtml(stage.fallback_reason || "Fallback applied.")}</p>` : "";
+            const promptBlock = stage.rendered_prompt
+              ? `<details><summary>Prompt</summary><pre>${escapeHtml(stage.rendered_prompt)}</pre></details>`
+              : "";
+            const responseBlock = stage.response_json && Object.keys(stage.response_json).length
+              ? `<details><summary>Parsed response</summary><pre>${escapeHtml(JSON.stringify(stage.response_json, null, 2))}</pre></details>`
+              : "";
+            return `<article class="stage-card">
+              <header>
+                <strong>${escapeHtml(stage.label || key)}</strong>
+                <span class="count">${outputCount}</span>
+              </header>
+              <p class="stage-meta">input ${inputCount} -> output ${outputCount}${removedCount ? ` -> removed ${removedCount}` : ""}</p>
+              ${fallback}
+              ${renderCandidateList(stage.candidates || [], "Output")}
+              ${renderCandidateList(stage.removed || [], "Removed")}
+              ${promptBlock}
+              ${responseBlock}
+            </article>`;
+          });
+        stageGrid.innerHTML = cards.length ? cards.join("") : "<div class='empty'>No stage data yet.</div>";
+      }
+
+      function renderCandidateList(items, label) {
+        if (!items.length) {
+          return "";
+        }
+        const rows = items.map(item => `<li><strong>${escapeHtml(item.name || "")}</strong>${item.reason ? ` - ${escapeHtml(item.reason)}` : ""}${item.evidence ? `<small>${escapeHtml(item.evidence)}</small>` : ""}${item.excerpt && !item.evidence ? `<small>${escapeHtml(item.excerpt)}</small>` : ""}</li>`).join("");
+        return `<details open><summary>${label} (${items.length})</summary><ul class="candidate-list">${rows}</ul></details>`;
+      }
+
+      async function runSingle() {
+        if (!selectedDoc() || !selectedPage()) {
+          return;
+        }
+        setBusy(runSingleButton, true, "Running...");
+        statusLine.textContent = `Running name extraction for ${selectedDoc()} p${String(selectedPage()).padStart(3, "0")}...`;
+        const response = await fetch(`/names/run-single/${encodeURIComponent(selectedDoc())}/${selectedPage()}`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify(requestPayload()),
+        });
+        setBusy(runSingleButton, false, "Run This Page");
+        if (!response.ok) {
+          statusLine.textContent = "Name extraction failed.";
+          return;
+        }
+        const payload = await response.json();
+        renderPayload(payload);
+        await loadPages(selectedDoc(), selectedPage());
+        statusLine.textContent = `Saved p${String(selectedPage()).padStart(3, "0")}.names.json`;
+      }
+
+      async function rerunStage() {
+        if (!selectedDoc() || !selectedPage()) {
+          return;
+        }
+        setBusy(rerunButton, true, "Rerunning...");
+        statusLine.textContent = `Rerunning ${rerunSelect.value} for ${selectedDoc()} p${String(selectedPage()).padStart(3, "0")}...`;
+        const response = await fetch(`/names/rerun-pass/${encodeURIComponent(selectedDoc())}/${selectedPage()}/${encodeURIComponent(rerunSelect.value)}`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify(requestPayload()),
+        });
+        setBusy(rerunButton, false, "Rerun Stage");
+        if (!response.ok) {
+          statusLine.textContent = "Stage rerun failed.";
+          return;
+        }
+        const payload = await response.json();
+        renderPayload(payload);
+        await loadPages(selectedDoc(), selectedPage());
+        statusLine.textContent = `Reran ${rerunSelect.value} and refreshed downstream stages.`;
+      }
+
+      async function runAll() {
+        if (!selectedDoc()) {
+          return;
+        }
+        setBusy(runAllButton, true, "Running Whole Doc...");
+        statusLine.textContent = `Starting whole-document name extraction for ${selectedDoc()}...`;
+        const response = await fetch(`/names/run-all/${encodeURIComponent(selectedDoc())}`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({...requestPayload(), resume: true}),
+        });
+        if (!response.ok) {
+          setBusy(runAllButton, false, "Run Whole Doc");
+          statusLine.textContent = "Could not start background job.";
+          return;
+        }
+        const job = await response.json();
+        await pollJob(job.job_id);
+      }
+
+      async function pollJob(jobId) {
+        const response = await fetch(`/names/jobs/${jobId}`);
+        const job = await response.json();
+        if (job.status === "running") {
+          statusLine.textContent = `Job ${jobId} is still running...`;
+          window.setTimeout(() => pollJob(jobId), 1000);
+          return;
+        }
+        setBusy(runAllButton, false, "Run Whole Doc");
+        if (job.status === "done") {
+          statusLine.textContent = `Whole-document extraction finished: ${job.manifest.completed_pages} done, ${job.manifest.skipped_pages} skipped, ${job.manifest.error_pages} errors.`;
+          await loadPages(selectedDoc(), selectedPage());
+          await loadResult(selectedDoc(), selectedPage());
+          return;
+        }
+        statusLine.textContent = `Job failed: ${job.error || "unknown error"}`;
+      }
+
+      function escapeHtml(value) {
+        return String(value)
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;");
+      }
+
+      docsSelect.addEventListener("change", async () => {
+        await loadPages(selectedDoc());
+        await loadResult(selectedDoc(), selectedPage());
+      });
+
+      pageSelect.addEventListener("change", async () => {
+        await loadResult(selectedDoc(), selectedPage());
+      });
+
+      runSingleButton.addEventListener("click", runSingle);
+      rerunButton.addEventListener("click", rerunStage);
+      runAllButton.addEventListener("click", runAll);
+
+      if (initialData && Object.keys(initialData).length) {
+        renderPayload(initialData);
+        statusLine.textContent = `Viewing ${initialData.doc_id} p${String(initialData.page).padStart(3, "0")}.`;
+      } else {
+        renderPayload({});
+      }
+    </script>
+  </body>
+</html>

@@ -1,0 +1,40 @@
+Report types:
+
+* `statement`: recorded testimony, declaration, or first-person account
+
+* `correspondence`: any official letter, telegram, memo, recommendation, forwarding note, or investigative office communication.
+
+
+Crime Type:
+* `kidnapping`: use when the page says the person was **abducted, seized, carried off, or stolen away** against their will, often from home, family, tribe, or native place.
+
+* `illegal detention`: use when the page says the person was **kept, confined, imprisoned, or prevented from leaving**, especially when the focus is on unlawful holding rather than sale or transport.
+
+
+
+Conflict type:
+* `manumission dispute`: use when the page is about whether the person should be **freed, granted a manumission certificate, or recognized as entitled to release**.
+
+* `ownership dispute`: use when the main issue is **who owns or claims the person**, including competing masters or contested possession.
+
+* `debt dispute`: use when the case centers on a **debt, repayment claim, or financial obligation** affecting the person’s status, holding, or transfer.
+
+* `free-status dispute`: use when the issue is whether the person is **already free, was wrongly treated as enslaved, or should be recognized as not legally enslaved**.
+
+* `forced-transfer dispute`: use when the page centers on a dispute over the person being **taken, sent, or moved against their will** from one place or controller to another.
+
+* `repatriation dispute`: use when the main issue is whether, where, or how the person should be **sent back or allowed to return** to a home place, homeland, or chosen destination.
+
+* `kidnapping case`: use when the page frames the matter primarily as a **kidnapping/abduction case**, rather than just a later ownership or manumission issue.
+
+
+
+Trial type:
+* manumission requested`: use when the page says the person **asked for freedom** or sought release, but does not specifically mention a certificate.
+*freedom/manumission outcome: use when the page indicates any official step, decision, or completion related to a person’s freedom, manumission, or recognition as free. This includes cases where manumission is recommended, approved/granted, or the person’s free status is confirmed; where the person is released, discharged, or set at liberty; and where a related certificate is sent, forwarded, or delivered.
+*repatriation arranged`: use when the page says arrangements were made to **send the person back** or forward them to a home or chosen destination.
+
+
+
+
+

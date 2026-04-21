@@ -52,7 +52,10 @@ def extract_json(s: str) -> Any | None:
 
 
 def render_prompt(template: str, **kwargs: Any) -> str:
-    return template.format(**kwargs)
+    rendered = template
+    for key, value in kwargs.items():
+        rendered = rendered.replace("{" + key + "}", str(value))
+    return rendered
 
 
 def _first_json_start(text: str) -> int | None:

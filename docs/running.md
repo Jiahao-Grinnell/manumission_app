@@ -17,7 +17,7 @@ The project is being built phase by phase. Do not expect every URL to work yet.
 Current completed runtime target:
 
 ```text
-M3 / Phase 3: PDF ingest + normalizer + aggregator + OCR
+M4 / Phase 4.3: PDF ingest + normalizer + aggregator + OCR + page_classifier + name_extractor + metadata_extractor
 ```
 
 Available now:
@@ -37,15 +37,26 @@ Available now:
 - `ocr` can preview the preprocessing pipeline for rendered page PNGs.
 - `ocr` has a CLI and a standalone local UI at `http://127.0.0.1:5103/ocr/`.
 - `ocr` writes durable text artifacts under `data/ocr_text/<doc_id>/` when the OCR model is available.
+- `page_classifier` can classify OCR text pages into extract/skip decisions and report types.
+- `page_classifier` has a CLI and a standalone local UI at `http://127.0.0.1:5104/classify/`.
+- `page_classifier` writes durable JSON artifacts under `data/intermediate/<doc_id>/pNNN.classify.json`.
+- `name_extractor` can run the five-stage subject-name pipeline for pages where `should_extract=true`.
+- `name_extractor` has a CLI and a standalone local UI at `http://127.0.0.1:5105/names/`.
+- `name_extractor` writes durable JSON artifacts under `data/intermediate/<doc_id>/pNNN.names.json`.
+- `name_extractor` only lists documents that already have OCR text in `data/ocr_text/<doc_id>/` and at least one classifier result with `should_extract=true`.
+- `metadata_extractor` can extract one validated `Detailed info.csv` row per named person on an extractable page.
+- `metadata_extractor` has a CLI and a standalone local UI at `http://127.0.0.1:5106/meta/`.
+- `metadata_extractor` writes durable JSON artifacts under `data/intermediate/<doc_id>/pNNN.meta.json`.
+- `metadata_extractor` only lists documents and pages that already have OCR text, `should_extract=true`, and non-empty `pNNN.names.json`.
 
 Not available yet:
 
 - `http://127.0.0.1:5000/`
 - Main Web App
 - Dashboard
-- Classifier, NER, and orchestration pages
+- Remaining place module and orchestration pages
 
-`http://127.0.0.1:5000/` becomes available after M6 / Phase 6, when the `web_app` service is implemented and added to Compose. During the current Phase 3 target, port 5000 is expected to fail.
+`http://127.0.0.1:5000/` becomes available after M6 / Phase 6, when the `web_app` service is implemented and added to Compose. During the current Phase 4.3 target, port 5000 is expected to fail.
 
 ## 2. Open the Project
 
@@ -671,7 +682,292 @@ p002.txt: Upload Two
 
 The full OCR call can take a while because it loads the vision model and sends one or more images per page to Ollama. The fast Phase 3 dev loop is the preprocessing preview plus mocked unit tests; the full live-model smoke test only needs to be repeated after OCR model, prompt, preprocessing, or runtime changes.
 
-## 15. Future Main Web UI Routes
+## 15. Phase 4.1 Page Classifier Testing
+
+Build and run the standalone classifier UI:
+
+```bash
+docker compose --profile classifier up -d --build page_classifier
+```
+
+Open:
+
+```text
+http://127.0.0.1:5104/classify/
+```
+
+Health check:
+
+```bash
+curl http://127.0.0.1:5104/healthz
+```
+
+Expected:
+
+```json
+{"module":"page_classifier","status":"ok"}
+```
+
+Run the module unit tests:
+
+```bash
+docker build -f docker/ner.Dockerfile -t manumission-ner:phase4_1 .
+docker run --rm manumission-ner:phase4_1 python -m unittest discover -s /app/modules/page_classifier/tests -p "test_*.py"
+```
+
+Run a single-page classification against existing OCR text:
+
+```bash
+curl -X POST http://127.0.0.1:5104/classify/run-single/sample%20input%201/6 \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+Expected highlights:
+
+```text
+"should_extract":
+"report_type":
+"evidence":
+"override":
+```
+
+Run a whole-document classification job:
+
+```bash
+curl -X POST http://127.0.0.1:5104/classify/run-all/sample%20input%201 \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+The response returns a `job_id`. Poll it at:
+
+```text
+http://127.0.0.1:5104/classify/jobs/<job_id>
+```
+
+Expected output artifacts:
+
+```text
+data/intermediate/sample input 1/
+  p001.classify.json
+  p002.classify.json
+  ...
+```
+
+## 16. Phase 4.2 Name Extractor Testing
+
+Build and run the standalone name extractor UI:
+
+```bash
+docker compose --profile names up -d --build name_extractor
+```
+
+Open:
+
+```text
+http://127.0.0.1:5105/names/
+```
+
+Important UI behavior:
+
+- the document selector is a dropdown, not a freeform input
+- docs are discovered from `data/ocr_text/`
+- a doc appears only after `page_classifier` has produced at least one `pNNN.classify.json` with `should_extract=true`
+- if a doc is missing, run `http://127.0.0.1:5104/classify/` on the whole document first
+
+Health check:
+
+```bash
+curl http://127.0.0.1:5105/healthz
+```
+
+Expected:
+
+```json
+{"module":"name_extractor","status":"ok"}
+```
+
+Run the module unit tests:
+
+```bash
+docker build -f docker/ner.Dockerfile -t manumission-ner:phase4_2 .
+docker run --rm manumission-ner:phase4_2 python -m unittest discover -s /app/modules/name_extractor/tests -p "test_*.py"
+```
+
+Run one extractable page after classifier output exists:
+
+```bash
+curl -X POST http://127.0.0.1:5105/names/run-single/sample%20input%201/6 \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+If `sample input 1` does not appear in the dropdown, inspect:
+
+```text
+data/ocr_text/sample input 1/
+data/intermediate/sample input 1/pNNN.classify.json
+```
+
+The name extractor will hide that document until at least one classifier file says:
+
+```json
+{"should_extract": true}
+```
+
+Expected highlights:
+
+```text
+"named_people":
+"passes":
+"removed_candidates":
+"final_reasons":
+```
+
+Rerun only `verify` for the same page:
+
+```bash
+curl -X POST http://127.0.0.1:5105/names/rerun-pass/sample%20input%201/6/verify \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+Run a whole-document extraction job:
+
+```bash
+curl -X POST http://127.0.0.1:5105/names/run-all/sample%20input%201 \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+Poll the returned `job_id` at:
+
+```text
+http://127.0.0.1:5105/names/jobs/<job_id>
+```
+
+Expected output artifacts:
+
+```text
+data/intermediate/sample input 1/
+  p001.classify.json
+  p001.names.json
+  p002.classify.json
+  p002.names.json
+  ...
+```
+
+The UI should show:
+
+- extractable pages only
+- final names highlighted separately from dropped names
+- stage cards for `pass1`, `pass1_filter`, `recall`, `recall_filter`, `merged`, `verify`, and `rule_filter`
+- prompt text and parsed JSON for each model stage
+- dropped-candidate reasons tagged by stage
+
+## 17. Phase 4.3 Metadata Extractor Testing
+
+Build and run the standalone metadata extractor UI:
+
+```bash
+docker compose --profile meta up -d --build metadata_extractor
+```
+
+Open:
+
+```text
+http://127.0.0.1:5106/meta/
+```
+
+Important UI behavior:
+
+- the document selector is a dropdown, not a freeform input
+- docs are discovered from `data/ocr_text/`
+- a page appears only when `page_classifier` has produced `pNNN.classify.json` with `should_extract=true`
+- the same page must also already have `pNNN.names.json` with at least one named person
+- if a doc is missing, run classifier first, then run name extraction for at least one page on that doc
+
+Health check:
+
+```bash
+curl http://127.0.0.1:5106/healthz
+```
+
+Expected:
+
+```json
+{"module":"metadata_extractor","status":"ok"}
+```
+
+Run the module unit tests:
+
+```bash
+docker build -f docker/ner.Dockerfile -t manumission-ner:phase4_3 .
+docker run --rm manumission-ner:phase4_3 python -m unittest discover -s /app/modules/metadata_extractor/tests -p "test_*.py"
+```
+
+Run one named person after classifier and names output exist:
+
+```bash
+curl -X POST http://127.0.0.1:5106/meta/run-single/sample%20input%201/6/Mariam%20bint%20Yusuf \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+Expected highlights:
+
+```text
+"rows":
+"validation":
+"raw_values":
+"rendered_prompt":
+"response_json":
+```
+
+Run all named people on one page:
+
+```bash
+curl -X POST http://127.0.0.1:5106/meta/run-page/sample%20input%201/6 \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+Run a whole-document extraction job:
+
+```bash
+curl -X POST http://127.0.0.1:5106/meta/run-all/sample%20input%201 \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+Poll the returned `job_id` at:
+
+```text
+http://127.0.0.1:5106/meta/jobs/<job_id>
+```
+
+Expected output artifacts:
+
+```text
+data/intermediate/sample input 1/
+  p001.classify.json
+  p001.names.json
+  p001.meta.json
+  p002.classify.json
+  p002.names.json
+  p002.meta.json
+  ...
+```
+
+The UI should show:
+
+- one field card per final metadata field for the selected person
+- OCR text with evidence highlighted in different colors
+- per-field validation statuses such as `ok`, `empty`, `cleared_invalid`, `cleared_missing_evidence`, and `inherited`
+- the rendered prompt and parsed response JSON for debugging
+
+## 18. Future Main Web UI Routes
 
 After M6 / Phase 6, the main Web App should expose these local routes:
 
@@ -690,9 +986,9 @@ After M6 / Phase 6, the main Web App should expose these local routes:
 | Normalizer | `http://127.0.0.1:5000/normalizer/` | Rule playground |
 | Aggregator | `http://127.0.0.1:5000/aggregate/` | CSV preview and download |
 
-These routes are future targets, not current Phase 3 behavior.
+These routes are future targets, not current Phase 4.3 behavior.
 
-## 16. Running Tests
+## 19. Running Tests
 
 Shared-library tests:
 
@@ -719,7 +1015,7 @@ Future module tests should follow this pattern:
 docker compose run --rm <module_service> python -m unittest discover -s src/modules/<module>/tests -p "test_*.py"
 ```
 
-## 17. Changing Models Later
+## 20. Changing Models Later
 
 To switch the text extraction model:
 
@@ -766,7 +1062,7 @@ To switch the OCR model:
 
 Keep model tags exact. `qwen2.5:14b-instruct` and `qwen2.5:latest` are different models.
 
-## 18. Useful Commands
+## 21. Useful Commands
 
 Start GPU Ollama:
 
@@ -817,7 +1113,7 @@ Run gateway verification:
 bash scripts/verify_gateway.sh
 ```
 
-## 19. Troubleshooting
+## 22. Troubleshooting
 
 ### `docker compose up -d ollama` fails with a GPU error
 
@@ -949,7 +1245,7 @@ OLLAMA_LOAD_TIMEOUT=10m
 
 This avoids keeping the text model and OCR model in VRAM at the same time on a 16 GB GPU.
 
-## 20. Artifact Locations
+## 23. Artifact Locations
 
 | Artifact | Path |
 |---|---|

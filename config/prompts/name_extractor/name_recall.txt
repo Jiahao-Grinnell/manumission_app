@@ -1,0 +1,24 @@
+Do a second, recall-focused pass over this same OCR page and return ONLY named enslaved or manumission subjects that might have been missed.
+
+Return JSON only:
+{
+  "named_people": [
+    {"name": string, "evidence": string}
+  ]
+}
+
+Look especially for:
+- names after "the following refugee slaves"
+- names after "for delivery to"
+- names in numbered or parenthesized lists
+- names in certificate recommendation or delivery pages
+- names in grouped correspondence where one sentence applies to several people
+- names with lineage forms such as "daughter of" or "son of"
+- names appearing after "statement of", "statement made by", "certificate to", "grant certificate to", or "recommend certificate for"
+
+Still exclude owners, officials, buyers, sellers, and any free-born or non-slave person.
+If a page contains a transfer chain like "sold to X" or "bought by Y", those names are not subjects.
+Output JSON only.
+
+OCR TEXT:
+<<<{ocr}>>>

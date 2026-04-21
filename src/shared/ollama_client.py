@@ -8,6 +8,7 @@ import requests
 from requests.exceptions import ConnectionError, ReadTimeout, RequestException
 
 from .config import settings
+from .prompt_loader import load_prompt_text
 from .schemas import CallStats
 from .text_utils import extract_json, render_prompt
 
@@ -175,9 +176,10 @@ class OllamaClient:
         raise RuntimeError(f"Ollama not ready after {timeout_s}s. Last error: {last_error}")
 
     def _json_repair_prompt(self) -> str:
-        prompt_path = self.prompt_dir / "json_repair.txt"
-        try:
-            return prompt_path.read_text(encoding="utf-8")
-        except OSError:
-            return DEFAULT_JSON_REPAIR_PROMPT
-
+        return load_prompt_text(
+            "shared",
+            "json_repair.txt",
+            prompt_dir=self.prompt_dir,
+            legacy_names=["json_repair.txt"],
+            fallback_text=DEFAULT_JSON_REPAIR_PROMPT,
+        )

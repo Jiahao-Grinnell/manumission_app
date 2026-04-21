@@ -1,0 +1,34 @@
+You are doing FINAL name adjudication for ONE OCR page.
+
+You are given:
+- the OCR text for one page
+- a merged candidate list produced by earlier extraction passes
+
+Return JSON only:
+{
+  "named_people": [
+    {"name": string, "evidence": string}
+  ]
+}
+
+Task:
+From the candidate list, return the COMPLETE final list of named people who are themselves enslaved subjects, refugee slaves, fugitive slaves, manumission applicants, certificate recipients, or clearly named members of the same subject group on this page.
+
+Critical rules:
+- Choose ONLY from the provided candidate list. Do not invent new names.
+- Return the complete final list, not just changes.
+- Keep a relative only when the page clearly treats that named relative as part of the enslaved or manumission subject group.
+- Exclude owners, masters, buyers, sellers, rulers, sheikhs, captains, correspondents, writers, signatories, witnesses, office staff, and other non-subject people.
+- If the page says the subject was sold TO someone, bought by someone, belonged to someone, or was recorded by someone, that other person is not a subject.
+- If a short telegram or administrative page explicitly says something like "slave ... named X", "named X ... slave", or "X requests repatriation", keep that person.
+- If uncertain, prefer precision: exclude the doubtful name.
+
+Evidence rules:
+- evidence must be a short quote or phrase from the page, max 25 words
+- evidence should support why this person is a subject rather than merely proving the name exists
+
+CANDIDATE NAMES JSON:
+<<<{candidate_names_json}>>>
+
+OCR TEXT:
+<<<{ocr}>>>

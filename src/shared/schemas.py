@@ -8,7 +8,7 @@ from pydantic import BaseModel
 class PageDecision(BaseModel):
     should_extract: bool
     skip_reason: Literal["index", "record_metadata", "bad_ocr"] | None = None
-    report_type: Literal["statement", "transport/admin", "correspondence"] = "statement"
+    report_type: Literal["statement", "correspondence"] = "statement"
     evidence: str = ""
 
 

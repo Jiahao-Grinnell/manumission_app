@@ -1,10 +1,12 @@
+detail_report_types:
+  - statement
+  - correspondence
 crime_types:
   - kidnapping
-  - sale
-  - trafficking
   - illegal detention
-  - forced transfer
-  - debt-claim transfer
+whether_abuse_values:
+  - "yes"
+  - "no"
 conflict_types:
   - manumission dispute
   - ownership dispute
@@ -15,13 +17,8 @@ conflict_types:
   - kidnapping case
 trial_types:
   - manumission requested
-  - manumission certificate requested
-  - manumission recommended
-  - manumission granted
-  - free status confirmed
-  - released
+  - freedom/manumission outcome
   - repatriation arranged
-  - certificate delivered
 place_map:
   shargah: Sharjah
   sharjeh: Sharjah

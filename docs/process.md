@@ -106,7 +106,7 @@ Verification: upload a small PDF with a few pages, see thumbnails, and confirm `
 
 Also run an existing-file registration smoke test using one local sample PDF. For the fuller local PDF, run a page-range or interrupt/resume test instead of requiring the whole document in every dev loop.
 
-Implemented verification:
+Verification commands:
 
 ```bash
 docker build -f docker/ingest.Dockerfile -t manumission-ingest:phase2 .
@@ -232,35 +232,94 @@ This is the core business logic. Build modules one at a time in dependency order
 
 ### 4.1 Module 04: page_classifier
 
+Status: implemented on 2026-04-21. The module exposes a Flask blueprint under `/classify/*`, a CLI for single-page or whole-document runs, and a standalone UI at `http://127.0.0.1:5104/classify/` when started with the `classifier` profile.
+
 The simplest LLM module: one prompt, one JSON response, one decision.
 
 - `core.py`: `classify(ocr_text) -> PageDecision`.
-- Load prompt from `config/prompts/page_classify.txt`.
+- Load prompt from `config/prompts/page_classifier/page_classify.txt`.
 - UI: text selector, full OCR text, JSON result, classification badge, and highlighted evidence.
 
-Verification: run known statement, transport/admin, correspondence, index, and bad-OCR pages and check classification.
+Verification: run known statement, correspondence/admin, correspondence, index, and bad-OCR pages and check classification.
+
+Implemented verification:
+
+```bash
+docker compose --profile classifier config
+docker build -f docker/ner.Dockerfile -t manumission-ner:phase4_1 .
+docker run --rm manumission-ner:phase4_1 python -m unittest discover -s /app/modules/page_classifier/tests -p "test_*.py"
+docker compose --profile classifier up -d --build page_classifier
+curl http://127.0.0.1:5104/healthz
+```
 
 ### 4.2 Module 05: name_extractor
 
-This is the most complex module: four LLM stages plus rule filtering.
+Implemented on 2026-04-21 with the inherited five-call baseline:
 
-- Functions: `pass1_extract`, `pass2_recall`, `filter_candidates`, `verify_final`.
-- Every stage should be separately testable and visible in the UI.
-- Final rule filter `keep_subject_name` lives in `core.py`.
-- UI:
-  - text selector at the top
-  - four panels for pass1, recall, filter, and verify
-  - final output panel
-  - removed candidates shown with reasons such as matched negative role pattern or not in subject group
+- `pass1` raw extraction
+- `pass1_filter`
+- `recall` raw extraction
+- `recall_filter`
+- `merged` fuzzy dedupe
+- `verify`
+- `rule_filter`
+
+Key implementation decisions:
+
+- Prompts live under `config/prompts/name_extractor/` and are loaded at runtime.
+- The stored `pNNN.names.json` keeps every stage's input/output plus prompt text, parsed model JSON, fallback notes, dropped candidates, and final keep reasons.
+- `rerun-pass` is decision-complete: it accepts `pass1`, `pass1_filter`, `recall`, `recall_filter`, or `verify`, reruns that stage, and recomputes every downstream stage while reusing intact upstream artifacts.
+- Merge logic is imported from `08 normalizer` instead of being duplicated.
+- The final rule filter explains why a candidate survived or was removed, including negative-role matches and `free born / not a slave` handling.
+
+UI:
+
+- document/page selector limited to `should_extract=true` pages
+- full OCR text with final names highlighted and dropped names highlighted separately
+- one stage card per pass with counts, prompt, and parsed response JSON
+- final name table
+- dropped-candidate table with stage + reason
+
+Implemented verification:
+
+```bash
+docker compose --profile names config
+docker build -f docker/ner.Dockerfile -t manumission-ner:phase4_2 .
+docker run --rm manumission-ner:phase4_2 python -m unittest discover -s /app/modules/name_extractor/tests -p "test_*.py"
+docker compose --profile names up -d --build name_extractor
+curl http://127.0.0.1:5105/healthz
+```
 
 ### 4.3 Module 06: metadata_extractor
 
-- Input `(ocr_text, name, page, report_type)` -> one detail row.
-- Single LLM call with a fixed schema.
-- UI:
-  - select page and person
-  - show five field cards: crime_type, whether_abuse, conflict_type, trial, amount_paid
-  - show field-level evidence and link it to the original text
+Implemented on 2026-04-21 as the first per-person metadata stage after `name_extractor`.
+
+Key implementation decisions:
+
+- Prompts live under `config/prompts/metadata_extractor/` and are loaded at runtime. `meta_pass.txt` holds the extraction prompt, and `category_guide.txt` holds the final `Detailed info.csv` category explanations for debugging and prompt tuning.
+- Final allowlists come from `config/schemas/vocab.yaml`, loaded through `src/modules/metadata_extractor/vocab.py`. This keeps the final metadata categories aligned with one YAML source of truth.
+- The page artifact is `data/intermediate/<doc_id>/pNNN.meta.json`. It stores page-level context, all extracted people, final `rows`, per-field validation, raw model values, rendered prompt text, parsed response JSON, and evidence snippets.
+- Each extraction is one LLM call per person with strict post-parse validation. Non-empty values without evidence are cleared, invalid enum values are cleared, and `report_type` falls back to page-classifier context when the model produces an invalid final value.
+- Running `run-single` for one person upserts that person's result into an existing `pNNN.meta.json` instead of dropping previously extracted people on the page.
+- The standalone UI only lists documents/pages that already have OCR text, `should_extract=true`, and at least one named person from `name_extractor`.
+
+UI:
+
+- document, page, and person selector
+- field cards for `report_type`, `crime_type`, `whether_abuse`, `conflict_type`, `trial`, and `amount_paid`
+- field-level evidence paired with each output value
+- OCR text with multi-color evidence highlighting
+- validation table plus prompt/parsed-response inspection
+
+Implemented verification:
+
+```bash
+docker compose --profile meta config
+docker build -f docker/ner.Dockerfile -t manumission-ner:phase4_3 .
+docker run --rm manumission-ner:phase4_3 python -m unittest discover -s /app/modules/metadata_extractor/tests -p "test_*.py"
+docker compose --profile meta up -d --build metadata_extractor
+curl http://127.0.0.1:5106/healthz
+```
 
 ### 4.4 Module 07: place_extractor
 
@@ -277,8 +336,9 @@ This is the most complex module: four LLM stages plus rule filtering.
 Each module should be run through its UI on 3 to 5 test pages with reasonable outputs. Finally, chain modules 04 through 07 for one document with CLI:
 
 ```bash
-docker compose run --rm classifier python -m modules.page_classifier.cli ...
-docker compose run --rm names python -m modules.name_extractor.cli ...
+docker compose run --rm page_classifier python -m modules.page_classifier.cli ...
+docker compose run --rm name_extractor python -m modules.name_extractor.cli ...
+docker compose run --rm metadata_extractor python -m modules.metadata_extractor.cli ...
 # and so on
 ```
 
@@ -414,6 +474,12 @@ The project is split into seven phases, each with a clear demoable result. This 
 
 ### M4 Four NER Modules
 
+- [x] `page_classifier` UI can show OCR text, evidence highlighting, raw model JSON, and rule-comparison signals for a selected page.
+- [x] `page_classifier` CLI runs independently and writes `pNNN.classify.json` under `data/intermediate/<doc_id>/`.
+- [x] `name_extractor` UI can show five stage cards, OCR highlighting, final names, and dropped-candidate reasons for a selected page.
+- [x] `name_extractor` CLI runs independently and writes `pNNN.names.json` under `data/intermediate/<doc_id>/`.
+- [x] `metadata_extractor` UI can show field cards, evidence highlighting, validation, and prompt/response details for a selected person.
+- [x] `metadata_extractor` CLI runs independently and writes `pNNN.meta.json` under `data/intermediate/<doc_id>/`.
 - [ ] Each module has its own UI and can show results for a selected page.
 - [ ] At least five test pages are manually reviewed with reasonable outputs.
 - [ ] Each module's CLI runs independently.

@@ -106,7 +106,7 @@ Key points:
 - Three retries with exponential backoff, inherited from the original code.
 - Timeout `(10, 600)`: 10 seconds to connect, 600 seconds to read.
 - `requests.Session` is used to reuse keep-alive connections.
-- If JSON parsing fails, the client automatically sends a JSON repair prompt from `config/prompts/json_repair.txt`.
+- If JSON parsing fails, the client automatically sends a JSON repair prompt from `config/prompts/shared/json_repair.txt`.
 
 ### 5.4 `schemas.py`
 
@@ -116,7 +116,7 @@ Define models with `pydantic.BaseModel` or `dataclass`:
 class PageDecision(BaseModel):
     should_extract: bool
     skip_reason: Optional[Literal["index", "record_metadata", "bad_ocr"]]
-    report_type: Literal["statement", "transport/admin", "correspondence"]
+    report_type: Literal["statement", "correspondence"]
     evidence: str = ""
 
 class NamedPerson(BaseModel):

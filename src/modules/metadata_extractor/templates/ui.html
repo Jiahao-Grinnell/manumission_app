@@ -1,0 +1,548 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Metadata Extractor</title>
+    <link rel="stylesheet" href="{{ url_for('metadata_extractor.static', filename='metadata_extractor.css') }}">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">Module 06</p>
+          <h1>Metadata Extractor</h1>
+          <p>Extract one `Detailed info.csv` row per named subject, inspect field-level evidence, and validate every final category against the YAML allowlists.</p>
+        </div>
+        <div class="actions">
+          <button id="run-single">Extract This Person</button>
+          <button class="secondary" id="run-page">Extract Whole Page</button>
+          <button class="secondary" id="run-all">Extract Whole Doc</button>
+        </div>
+      </header>
+
+      <section class="controls">
+        <label>
+          Document
+          <select id="doc-select">
+            {% if not docs %}
+              <option value="">No docs with names found</option>
+            {% endif %}
+            {% for doc in docs %}
+              <option value="{{ doc.doc_id }}" {% if selected_doc_id == doc.doc_id %}selected{% endif %}>
+                {{ doc.doc_id }} - {{ doc.completed_pages }}/{{ doc.pages }} complete
+              </option>
+            {% endfor %}
+          </select>
+        </label>
+
+        <label>
+          Page
+          <select id="page-select">
+            {% if not pages %}
+              <option value="">No pages with names</option>
+            {% endif %}
+            {% for page in pages %}
+              <option value="{{ page.page }}" {% if selected_page == page.page %}selected{% endif %}>
+                p{{ "%03d"|format(page.page) }} - {{ page.report_type }}
+              </option>
+            {% endfor %}
+          </select>
+        </label>
+
+        <label>
+          Person
+          <select id="person-select">
+            {% if not people %}
+              <option value="">No named people</option>
+            {% endif %}
+            {% for person in people %}
+              <option value="{{ person }}" {% if selected_name == person %}selected{% endif %}>{{ person }}</option>
+            {% endfor %}
+          </select>
+        </label>
+
+        <label>
+          Model
+          <input id="model-input" placeholder="Optional override, e.g. qwen2.5:14b-instruct">
+        </label>
+      </section>
+
+      <div class="status-strip" id="status-line"></div>
+
+      <section class="summary-grid">
+        <article class="card">
+          <header>
+            <div>
+              <h2>Page Summary</h2>
+              <p id="summary-subtitle">Current page-level metadata output.</p>
+            </div>
+          </header>
+          <div class="card-body">
+            <div class="metric-grid">
+              <div class="metric">
+                <span>Rows</span>
+                <strong id="metric-rows">0</strong>
+              </div>
+              <div class="metric">
+                <span>People</span>
+                <strong id="metric-people">0</strong>
+              </div>
+              <div class="metric">
+                <span>Model Calls</span>
+                <strong id="metric-model">0</strong>
+              </div>
+              <div class="metric">
+                <span>Repair Calls</span>
+                <strong id="metric-repair">0</strong>
+              </div>
+            </div>
+            <div class="meta-line">
+              <span id="metric-elapsed">Elapsed: -</span>
+              <span id="metric-report-type">Report type: -</span>
+              <span id="metric-classifier">Classifier evidence: -</span>
+            </div>
+          </div>
+        </article>
+
+        <article class="card">
+          <header>
+            <div>
+              <h2>Rows</h2>
+              <p>All currently stored metadata rows for this page.</p>
+            </div>
+          </header>
+          <div class="card-body">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Crime</th>
+                  <th>Abuse</th>
+                  <th>Conflict</th>
+                  <th>Trial</th>
+                  <th>Amount</th>
+                </tr>
+              </thead>
+              <tbody id="rows-table">
+                <tr><td colspan="6">No result yet.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </article>
+      </section>
+
+      <section class="grid">
+        <article class="card source-panel">
+          <header>
+            <div>
+              <h2>OCR Text With Evidence</h2>
+              <p id="source-subtitle">Evidence highlights update when you switch people.</p>
+            </div>
+          </header>
+          <pre id="source-html">{% if initial_page_data %}{{ initial_page_data.source_html|safe }}{% else %}No OCR text loaded yet.{% endif %}</pre>
+        </article>
+
+        <div class="stack">
+          <article class="card">
+            <header>
+              <div>
+                <h2>Selected Person</h2>
+                <p id="person-subtitle">Field cards with paired evidence and validation.</p>
+              </div>
+            </header>
+            <div class="card-body" id="field-cards">
+              <div class="empty">Select a person and run extraction to inspect field-level output.</div>
+            </div>
+          </article>
+
+          <article class="card">
+            <header>
+              <div>
+                <h2>Validation</h2>
+                <p>Shows whether every field passed allowlist and evidence checks.</p>
+              </div>
+            </header>
+            <div class="card-body">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>Field</th>
+                    <th>Status</th>
+                    <th>Message</th>
+                  </tr>
+                </thead>
+                <tbody id="validation-rows">
+                  <tr><td colspan="3">No validation data yet.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </article>
+
+          <article class="card raw-panel">
+            <header>
+              <div>
+                <h2>Prompt And Response</h2>
+                <p>Rendered prompt and parsed model JSON for the selected person.</p>
+              </div>
+            </header>
+            <div class="card-body">
+              <details>
+                <summary>Prompt</summary>
+                <pre id="prompt-view">No result yet.</pre>
+              </details>
+              <details open>
+                <summary>Parsed response</summary>
+                <pre id="response-view">No result yet.</pre>
+              </details>
+            </div>
+          </article>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      const initialData = {{ (initial_page_data or {}) | tojson }};
+      const docSelect = document.getElementById("doc-select");
+      const pageSelect = document.getElementById("page-select");
+      const personSelect = document.getElementById("person-select");
+      const modelInput = document.getElementById("model-input");
+      const runSingleButton = document.getElementById("run-single");
+      const runPageButton = document.getElementById("run-page");
+      const runAllButton = document.getElementById("run-all");
+      const statusLine = document.getElementById("status-line");
+      const summarySubtitle = document.getElementById("summary-subtitle");
+      const metricRows = document.getElementById("metric-rows");
+      const metricPeople = document.getElementById("metric-people");
+      const metricModel = document.getElementById("metric-model");
+      const metricRepair = document.getElementById("metric-repair");
+      const metricElapsed = document.getElementById("metric-elapsed");
+      const metricReportType = document.getElementById("metric-report-type");
+      const metricClassifier = document.getElementById("metric-classifier");
+      const rowsTable = document.getElementById("rows-table");
+      const sourceHtml = document.getElementById("source-html");
+      const sourceSubtitle = document.getElementById("source-subtitle");
+      const personSubtitle = document.getElementById("person-subtitle");
+      const fieldCards = document.getElementById("field-cards");
+      const validationRows = document.getElementById("validation-rows");
+      const promptView = document.getElementById("prompt-view");
+      const responseView = document.getElementById("response-view");
+
+      const FIELD_ORDER = [
+        ["report_type", "Report Type"],
+        ["crime_type", "Crime Type"],
+        ["whether_abuse", "Whether abuse"],
+        ["conflict_type", "Conflict Type"],
+        ["trial", "Trial"],
+        ["amount_paid", "Amount paid"],
+      ];
+
+      function selectedDoc() {
+        return docSelect.value;
+      }
+
+      function selectedPage() {
+        return pageSelect.value;
+      }
+
+      function selectedPerson() {
+        return personSelect.value;
+      }
+
+      function requestPayload() {
+        const body = {};
+        if (modelInput.value.trim()) {
+          body.model = modelInput.value.trim();
+        }
+        return body;
+      }
+
+      function setBusy(button, busy, label) {
+        button.disabled = busy;
+        button.textContent = label;
+      }
+
+      async function loadPages(docId, preferredPage = "") {
+        if (!docId) {
+          pageSelect.innerHTML = '<option value="">No pages with names</option>';
+          return;
+        }
+        const response = await fetch(`/meta/pages/${encodeURIComponent(docId)}`);
+        const data = await response.json();
+        pageSelect.innerHTML = "";
+        if (!data.pages.length) {
+          pageSelect.innerHTML = '<option value="">No pages with names</option>';
+          return;
+        }
+        for (const page of data.pages) {
+          const option = document.createElement("option");
+          option.value = String(page.page);
+          option.textContent = `p${String(page.page).padStart(3, "0")} - ${page.report_type}`;
+          if (preferredPage && String(page.page) === String(preferredPage)) {
+            option.selected = true;
+          }
+          pageSelect.appendChild(option);
+        }
+      }
+
+      async function loadPeople(docId, page, preferredName = "") {
+        if (!docId || !page) {
+          personSelect.innerHTML = '<option value="">No named people</option>';
+          return;
+        }
+        const response = await fetch(`/meta/people/${encodeURIComponent(docId)}/${page}`);
+        const data = await response.json();
+        personSelect.innerHTML = "";
+        if (!data.people.length) {
+          personSelect.innerHTML = '<option value="">No named people</option>';
+          return;
+        }
+        for (const person of data.people) {
+          const option = document.createElement("option");
+          option.value = person;
+          option.textContent = person;
+          if (preferredName && person.toLowerCase() === preferredName.toLowerCase()) {
+            option.selected = true;
+          }
+          personSelect.appendChild(option);
+        }
+      }
+
+      async function loadResult(docId, page, name) {
+        if (!docId || !page) {
+          renderPayload({});
+          return;
+        }
+        statusLine.textContent = `Loading ${docId} p${String(page).padStart(3, "0")}...`;
+        const suffix = name ? `?name=${encodeURIComponent(name)}` : "";
+        const response = await fetch(`/meta/result/${encodeURIComponent(docId)}/${page}${suffix}`);
+        if (!response.ok) {
+          statusLine.textContent = "Could not load metadata page.";
+          renderPayload({});
+          return;
+        }
+        renderPayload(await response.json());
+        statusLine.textContent = `Viewing ${docId} p${String(page).padStart(3, "0")}.`;
+      }
+
+      function renderPayload(payload) {
+        const result = payload.result || null;
+        const classify = payload.classify || {};
+        const selectedPerson = payload.selected_person || null;
+        const names = payload.names || [];
+        sourceHtml.innerHTML = payload.source_html || "No OCR text loaded yet.";
+        sourceSubtitle.textContent = payload.doc_id
+          ? `${payload.doc_id} - p${String(payload.page).padStart(3, "0")} - ${Object.keys(payload.highlighted_fields || {}).length} highlighted field(s)`
+          : "Evidence highlights update when you switch people.";
+
+        metricReportType.textContent = `Report type: ${classify.report_type || "-"}`;
+        metricClassifier.textContent = `Classifier evidence: ${classify.evidence || "-"}`;
+
+        if (!result) {
+          summarySubtitle.textContent = "Current page-level metadata output.";
+          metricRows.textContent = "0";
+          metricPeople.textContent = String(names.length);
+          metricModel.textContent = "0";
+          metricRepair.textContent = "0";
+          metricElapsed.textContent = "Elapsed: -";
+          rowsTable.innerHTML = "<tr><td colspan='6'>No result yet.</td></tr>";
+          fieldCards.innerHTML = "<div class='empty'>Select a person and run extraction to inspect field-level output.</div>";
+          validationRows.innerHTML = "<tr><td colspan='3'>No validation data yet.</td></tr>";
+          promptView.textContent = "No result yet.";
+          responseView.textContent = "No result yet.";
+          personSubtitle.textContent = "Field cards with paired evidence and validation.";
+          return;
+        }
+
+        metricRows.textContent = String((result.rows || []).length);
+        metricPeople.textContent = String((result.names || []).length);
+        metricModel.textContent = String(result.model_calls || 0);
+        metricRepair.textContent = String(result.repair_calls || 0);
+        metricElapsed.textContent = `Elapsed: ${result.elapsed_seconds || "-"}s`;
+        summarySubtitle.textContent = result.rows && result.rows.length
+          ? `${result.rows.length} row(s) currently stored for this page.`
+          : "No metadata rows stored for this page yet.";
+
+        rowsTable.innerHTML = (result.rows || []).length
+          ? result.rows.map(row => `<tr>
+              <td>${escapeHtml(row.Name || "")}</td>
+              <td>${escapeHtml(row["Crime Type"] || "-")}</td>
+              <td>${escapeHtml(row["Whether abuse"] || "-")}</td>
+              <td>${escapeHtml(row["Conflict Type"] || "-")}</td>
+              <td>${escapeHtml(row.Trial || "-")}</td>
+              <td>${escapeHtml(row["Amount paid"] || "-")}</td>
+            </tr>`).join("")
+          : "<tr><td colspan='6'>No rows yet.</td></tr>";
+
+        if (!selectedPerson) {
+          fieldCards.innerHTML = "<div class='empty'>This person has not been extracted yet.</div>";
+          validationRows.innerHTML = "<tr><td colspan='3'>No validation data yet.</td></tr>";
+          promptView.textContent = "No result yet.";
+          responseView.textContent = "No result yet.";
+          personSubtitle.textContent = "Select a person and run extraction to inspect field-level output.";
+          return;
+        }
+
+        personSubtitle.textContent = `${selectedPerson.name} - ${selectedPerson.model_calls || 0} model call(s), ${selectedPerson.elapsed_seconds || "-"}s`;
+        fieldCards.innerHTML = renderFieldCards(selectedPerson);
+        validationRows.innerHTML = renderValidationRows(selectedPerson.validation || {});
+        promptView.textContent = selectedPerson.rendered_prompt || "No prompt saved.";
+        responseView.textContent = JSON.stringify(selectedPerson.response_json || {}, null, 2);
+      }
+
+      function renderFieldCards(person) {
+        const row = person.row || {};
+        const evidence = row._evidence || {};
+        const cards = FIELD_ORDER.map(([key, label]) => {
+          const rowKey = fieldToRowKey(key);
+          const value = row[rowKey] || "-";
+          const evidenceText = key === "report_type" ? (evidence.report_type || "-") : (evidence[key] || "-");
+          return `<article class="field-card ${key}">
+            <span class="field-label">${label}</span>
+            <strong class="field-value">${escapeHtml(value)}</strong>
+            <small class="field-evidence">${escapeHtml(evidenceText)}</small>
+          </article>`;
+        });
+        return `<div class="field-grid">${cards.join("")}</div>`;
+      }
+
+      function renderValidationRows(validation) {
+        const rows = FIELD_ORDER.map(([key, label]) => {
+          const item = validation[key] || {};
+          const status = item.status || "empty";
+          return `<tr>
+            <td>${label}</td>
+            <td><span class="tag ${status}">${escapeHtml(status)}</span></td>
+            <td>${escapeHtml(item.message || "-")}</td>
+          </tr>`;
+        });
+        return rows.join("");
+      }
+
+      function fieldToRowKey(key) {
+        return {
+          report_type: "Report Type",
+          crime_type: "Crime Type",
+          whether_abuse: "Whether abuse",
+          conflict_type: "Conflict Type",
+          trial: "Trial",
+          amount_paid: "Amount paid",
+        }[key];
+      }
+
+      async function runSingle() {
+        if (!selectedDoc() || !selectedPage() || !selectedPerson()) {
+          return;
+        }
+        setBusy(runSingleButton, true, "Extracting...");
+        statusLine.textContent = `Extracting metadata for ${selectedPerson()} on ${selectedDoc()} p${String(selectedPage()).padStart(3, "0")}...`;
+        const response = await fetch(`/meta/run-single/${encodeURIComponent(selectedDoc())}/${selectedPage()}/${encodeURIComponent(selectedPerson())}`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify(requestPayload()),
+        });
+        setBusy(runSingleButton, false, "Extract This Person");
+        if (!response.ok) {
+          statusLine.textContent = "Metadata extraction failed.";
+          return;
+        }
+        const payload = await response.json();
+        renderPayload(payload);
+        statusLine.textContent = `Saved metadata for ${selectedPerson()}.`;
+      }
+
+      async function runPage() {
+        if (!selectedDoc() || !selectedPage()) {
+          return;
+        }
+        setBusy(runPageButton, true, "Extracting Page...");
+        statusLine.textContent = `Extracting metadata for all names on ${selectedDoc()} p${String(selectedPage()).padStart(3, "0")}...`;
+        const response = await fetch(`/meta/run-page/${encodeURIComponent(selectedDoc())}/${selectedPage()}`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({...requestPayload(), name: selectedPerson()}),
+        });
+        setBusy(runPageButton, false, "Extract Whole Page");
+        if (!response.ok) {
+          statusLine.textContent = "Whole-page extraction failed.";
+          return;
+        }
+        const payload = await response.json();
+        renderPayload(payload);
+        statusLine.textContent = `Saved p${String(selectedPage()).padStart(3, "0")}.meta.json`;
+      }
+
+      async function runAll() {
+        if (!selectedDoc()) {
+          return;
+        }
+        setBusy(runAllButton, true, "Extracting Whole Doc...");
+        statusLine.textContent = `Starting whole-document metadata extraction for ${selectedDoc()}...`;
+        const response = await fetch(`/meta/run-all/${encodeURIComponent(selectedDoc())}`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({...requestPayload(), resume: true}),
+        });
+        if (!response.ok) {
+          setBusy(runAllButton, false, "Extract Whole Doc");
+          statusLine.textContent = "Could not start background job.";
+          return;
+        }
+        const job = await response.json();
+        await pollJob(job.job_id);
+      }
+
+      async function pollJob(jobId) {
+        const response = await fetch(`/meta/jobs/${jobId}`);
+        const job = await response.json();
+        if (job.status === "running") {
+          statusLine.textContent = `Job ${jobId} is still running...`;
+          window.setTimeout(() => pollJob(jobId), 1000);
+          return;
+        }
+        setBusy(runAllButton, false, "Extract Whole Doc");
+        if (job.status === "done") {
+          statusLine.textContent = `Whole-document extraction finished: ${job.manifest.completed_pages} done, ${job.manifest.skipped_pages} skipped, ${job.manifest.error_pages} errors.`;
+          await loadPages(selectedDoc(), selectedPage());
+          await loadPeople(selectedDoc(), selectedPage(), selectedPerson());
+          await loadResult(selectedDoc(), selectedPage(), selectedPerson());
+          return;
+        }
+        statusLine.textContent = `Job failed: ${job.error || "unknown error"}`;
+      }
+
+      function escapeHtml(value) {
+        return String(value)
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;");
+      }
+
+      docSelect.addEventListener("change", async () => {
+        await loadPages(selectedDoc());
+        await loadPeople(selectedDoc(), selectedPage());
+        await loadResult(selectedDoc(), selectedPage(), selectedPerson());
+      });
+
+      pageSelect.addEventListener("change", async () => {
+        await loadPeople(selectedDoc(), selectedPage());
+        await loadResult(selectedDoc(), selectedPage(), selectedPerson());
+      });
+
+      personSelect.addEventListener("change", async () => {
+        await loadResult(selectedDoc(), selectedPage(), selectedPerson());
+      });
+
+      runSingleButton.addEventListener("click", runSingle);
+      runPageButton.addEventListener("click", runPage);
+      runAllButton.addEventListener("click", runAll);
+
+      if (initialData && Object.keys(initialData).length) {
+        renderPayload(initialData);
+        statusLine.textContent = `Viewing ${initialData.doc_id} p${String(initialData.page).padStart(3, "0")}.`;
+      } else {
+        renderPayload({});
+      }
+    </script>
+  </body>
+</html>

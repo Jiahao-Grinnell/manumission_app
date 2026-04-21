@@ -182,6 +182,138 @@ services:
       retries: 12
       start_period: 10s
 
+  page_classifier:
+    build:
+      context: .
+      dockerfile: docker/ner.Dockerfile
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      DATA_ROOT: /data
+      PROMPT_DIR: /app/config/prompts
+      OLLAMA_URL: http://ollama:11434/api/generate
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:14b-instruct}
+      FLASK_ENV: production
+    user: "10001:10001"
+    volumes:
+      - ./data:/data
+    networks:
+      - llm_internal
+      - llm_frontend
+    ports:
+      - "127.0.0.1:5104:5104"
+    profiles:
+      - classifier
+      - standalone
+      - all
+    command: >
+      gunicorn -b 0.0.0.0:5104 -w 1 --timeout 600
+      'modules.page_classifier.standalone:create_app()'
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:5104/healthz', timeout=2).read()\"",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  name_extractor:
+    build:
+      context: .
+      dockerfile: docker/ner.Dockerfile
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      DATA_ROOT: /data
+      PROMPT_DIR: /app/config/prompts
+      OLLAMA_URL: http://ollama:11434/api/generate
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:14b-instruct}
+      FLASK_ENV: production
+    user: "10001:10001"
+    volumes:
+      - ./data:/data
+    networks:
+      - llm_internal
+      - llm_frontend
+    ports:
+      - "127.0.0.1:5105:5105"
+    profiles:
+      - names
+      - standalone
+      - all
+    command: >
+      gunicorn -b 0.0.0.0:5105 -w 1 --timeout 1200
+      'modules.name_extractor.standalone:create_app()'
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:5105/healthz', timeout=2).read()\"",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  metadata_extractor:
+    build:
+      context: .
+      dockerfile: docker/ner.Dockerfile
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      DATA_ROOT: /data
+      PROMPT_DIR: /app/config/prompts
+      OLLAMA_URL: http://ollama:11434/api/generate
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:14b-instruct}
+      FLASK_ENV: production
+    user: "10001:10001"
+    volumes:
+      - ./data:/data
+    networks:
+      - llm_internal
+      - llm_frontend
+    ports:
+      - "127.0.0.1:5106:5106"
+    profiles:
+      - meta
+      - standalone
+      - all
+    command: >
+      gunicorn -b 0.0.0.0:5106 -w 1 --timeout 1200
+      'modules.metadata_extractor.standalone:create_app()'
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:5106/healthz', timeout=2).read()\"",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
 networks:
   llm_internal:
     internal: true

@@ -1,0 +1,49 @@
+You are reading ONE OCR page from a historical slavery / manumission archive.
+
+Your task is to decide whether this page should be extracted, and if so infer the page-level report type.
+
+Return JSON only:
+{
+  "should_extract": true,
+  "skip_reason": null,
+  "report_type": "statement",
+  "evidence": "..."
+}
+
+Allowed skip_reason values:
+- null
+- index
+- record_metadata
+- bad_ocr
+
+Allowed report_type values:
+- statement
+- correspondence
+
+Definitions:
+- statement: a recorded testimony, declaration, or first-person account.
+- correspondence: any official letter, telegram, memo, recommendation, forwarding note, or investigative office communication.
+
+Critical rule:
+- Classify by the MAIN FUNCTION of the page, not by document form.
+- Use statement only for recorded testimony, declaration, or first-person account pages.
+- Use correspondence for all other extractable official communications, including forwarding, recommendation, logistics, repatriation handling, certificate handling, and office discussion.
+
+Decision hints:
+- Choose statement for "Statement of...", "I was born...", "I was kidnapped...", "I request...", recorded testimony, or declarations.
+- Choose correspondence for official letters, telegrams, memoranda, recommendations, forwarding notes, investigative discussion, repatriation requests/arrangements, passage, delivery to a place, maintenance, or certificate handling.
+
+Skip only when the page is clearly one of these:
+- index or list page
+- archive metadata / cover / about-this-record page
+- OCR too damaged to extract reliably
+
+Important:
+- Use ONLY this page.
+- Do not decide skip_reason merely because the page is short or administrative.
+- Administrative cover letters that still name manumission subjects should still be extracted.
+- evidence must be a short quote or phrase from the page, max 25 words.
+- Output JSON only.
+
+OCR TEXT:
+<<<{ocr}>>>
