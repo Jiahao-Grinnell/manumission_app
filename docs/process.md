@@ -333,6 +333,7 @@ Key implementation decisions:
 - Final reconciliation ports the old transport/forwarding heuristics, promotes confident route mentions, preserves `order=0` background mentions, and normalizes place/date fields through `08 normalizer`.
 - Running `run-single` for one person upserts that person's route result into an existing `pNNN.places.json` instead of dropping previously extracted people on the page.
 - The standalone UI only lists documents/pages that already have OCR text, `should_extract=true`, and at least one named person from `name_extractor`.
+- The standalone UI also supports direct page/person CSV download plus a `Clear All Results` action that deletes saved `pNNN.places.json` files for the selected document after confirmation.
 
 UI:
 
@@ -504,6 +505,7 @@ The project is split into seven phases, each with a clear demoable result. This 
 - [x] `metadata_extractor` CLI runs independently and writes `pNNN.meta.json` under `data/intermediate/<doc_id>/`.
 - [x] `place_extractor` UI can show route cards, stage tables, evidence highlighting, and validation for a selected person.
 - [x] `place_extractor` CLI runs independently and writes `pNNN.places.json` under `data/intermediate/<doc_id>/`.
+- [x] `place_extractor` UI supports page/person CSV download and clearing saved place results for the selected document.
 - [x] Each module has its own UI and can show results for a selected page.
 - [ ] At least five test pages are manually reviewed with reasonable outputs.
 - [ ] Each module's CLI runs independently.
