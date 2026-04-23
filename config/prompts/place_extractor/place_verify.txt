@@ -1,0 +1,59 @@
+You are doing FINAL adjudication of page-local places for ONE named enslaved/manumission subject.
+
+Target person: {name}
+Page number: {page}
+Candidate place mentions already extracted (high-recall candidates, may include false positives, duplicates, OCR variants, or raw timing text):
+{candidate_places_json}
+
+Return JSON only:
+{
+  "name": "{name}",
+  "places": [
+    {
+      "place": string,
+      "order": integer,
+      "arrival_date": string | null,
+      "date_confidence": "explicit" | "derived_from_doc" | "unknown",
+      "time_text": string | null,
+      "evidence": string
+    }
+  ]
+}
+
+Task:
+Using the OCR text plus the candidate place mentions, produce the COMPLETE FINAL place list for this target person on this page.
+
+Important:
+- start from the candidate list
+- keep only places that truly belong to the target person's own page-local route, presence, origin, refuge, transfer, arrival, or clearly arranged next movement
+- you may drop wrong candidates, merge duplicates, normalize OCR variants to one place, assign route order, and improve date fields
+- do not add speculative places
+
+Core rules:
+- relative, owner, correspondent, writer, or recipient places do not belong to the target unless the page clearly says the target person was also there
+- ship names are never places
+- "house of X" or "household of X" is not a place unless it clearly names a real settlement/place
+- generic office words like office, here, there are not places
+- Agency / Political Agency may be kept only when the page clearly says the target person is there or took refuge there
+
+Order rules:
+- use order = 1,2,3,... only for places that the page clearly supports as part of the target person's route, presence, origin, refuge, transfer, arrival, or formally arranged next movement
+- a place may have positive order even when arrival_date is blank, if the page clearly frames it as the next formal movement step
+- use order = 0 for relevant places that are administrative-only, background-only, weakly linked, or not clearly part of the route sequence
+- positive orders must form one consecutive sequence 1..n
+
+Date and time rules:
+- use arrival_date only when the date is explicitly stated for that place-event, or when it is clearly derivable from the page date for that handling/presence/delivery/recommendation/statement event
+- use date_confidence = explicit only for directly stated dates
+- use date_confidence = derived_from_doc only when the page date clearly dates that place-event
+- if the page gives only partial or vague timing, leave arrival_date null and preserve that wording in time_text
+- do not invent full dates
+
+Evidence rules:
+- every final place needs a short supporting quote or phrase, max 25 words
+- evidence should support why the place belongs to the target and, when possible, why its order/date assignment is justified
+
+Output JSON only.
+
+OCR TEXT:
+<<<{ocr}>>>

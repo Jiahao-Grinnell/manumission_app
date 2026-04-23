@@ -1,0 +1,35 @@
+Do a second, recall-focused pass for PAGE-LOCAL places for the same target person.
+
+Target person: {name}
+
+Return JSON only:
+{
+  "name": "{name}",
+  "places": [
+    {
+      "place": string,
+      "order": integer,
+      "arrival_date": string | null,
+      "date_confidence": "explicit" | "derived_from_doc" | "unknown",
+      "time_text": string | null,
+      "evidence": string
+    }
+  ]
+}
+
+Look especially for places often missed:
+- birthplace / native place wording
+- grouped subject pages where one shared place applies to multiple listed names
+- certificate delivery locations
+- movement chains like from X to Y and thence to Z
+- formal next-step movements such as sent to, sending him to, forwarded to, for delivery to, or repatriation to
+- administrative pages where a real forwarding route may exist, e.g. source place plus destination/arrival place
+- dates attached to the place, the handling event, the delivery event, the statement date, or the page date
+
+Rules:
+- use order=0 when the page does not clearly support route membership or target linkage
+- if a place has no support for a full date, leave arrival_date null and preserve partial timing in time_text
+- output JSON only
+
+OCR TEXT:
+<<<{ocr}>>>

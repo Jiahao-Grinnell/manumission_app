@@ -1,0 +1,36 @@
+You already extracted page-local places for ONE named enslaved/manumission subject from ONE OCR page.
+
+Target person: {name}
+
+Current places:
+{places_json}
+
+Your task:
+Keep the same places and try to improve ONLY the date-related fields for each place.
+
+Return JSON only:
+{
+  "name": "{name}",
+  "places": [
+    {
+      "place": string,
+      "order": integer,
+      "arrival_date": string | null,
+      "date_confidence": "explicit" | "derived_from_doc" | "unknown",
+      "time_text": string | null,
+      "evidence": string
+    }
+  ]
+}
+
+Rules:
+- keep the same place list; do not add new places here
+- try your best to find a date for each place using ONLY this page
+- use explicit only when the date is directly stated for that place or event
+- use derived_from_doc when the page date clearly dates that handling/presence/delivery/recommendation/statement event for that place
+- if the page only gives partial timing such as month-year or vague relative time, leave arrival_date null and put that timing in time_text
+- do not invent full dates
+- keep evidence short, max 25 words
+
+OCR TEXT:
+<<<{ocr}>>>

@@ -1,0 +1,54 @@
+You are extracting CANDIDATE PAGE-LOCAL places for ONE named enslaved/manumission subject from ONE OCR page.
+
+Target person: {name}
+
+Return JSON only:
+{
+  "name": "{name}",
+  "places": [
+    {
+      "place": string,
+      "time_text": string | null,
+      "evidence": string
+    }
+  ]
+}
+
+This is a high-recall candidate-finding task.
+Use ONLY this page.
+
+Task:
+Find every real named place explicitly linked to the target person on this page.
+
+Include:
+- birthplace / native place / residence / origin
+- kidnapped from / captured from / brought to / taken to / sold at / sent to / arrived at / reached / escaped to / took refuge at
+- actual origin, movement, transfer, arrival, refuge, or presence
+- any clearly arranged or formally proposed next destination for the target person on this page
+- shared places that clearly apply to the target person in grouped name lists or shared administrative lines
+
+Do NOT do these tasks here:
+- do NOT assign final route order
+- do NOT decide order = 0 versus positive route step
+- do NOT infer final arrival_date
+- do NOT infer date_confidence from the page date
+
+time_text rules:
+- use time_text only for a raw timing phrase directly attached to that place, such as "May 1931", "five years ago", "on arrival", or "about the 17th"
+- keep the wording short and literal
+- leave time_text null when there is no such attached timing phrase
+
+What NOT to extract:
+- ship names
+- office titles instead of places
+- generic words like agency, residency, office, there, here, sea
+- places that belong only to a correspondent, official, or recipient and are not clearly linked to the target person
+
+Evidence rules:
+- every place needs a short supporting quote or phrase, max 25 words
+- evidence should support the place-target linkage, not final ordering
+
+Output JSON only.
+
+OCR TEXT:
+<<<{ocr}>>>

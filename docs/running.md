@@ -17,7 +17,7 @@ The project is being built phase by phase. Do not expect every URL to work yet.
 Current completed runtime target:
 
 ```text
-M4 / Phase 4.3: PDF ingest + normalizer + aggregator + OCR + page_classifier + name_extractor + metadata_extractor
+M4 / Phase 4.4: PDF ingest + normalizer + aggregator + OCR + page_classifier + name_extractor + metadata_extractor + place_extractor
 ```
 
 Available now:
@@ -48,15 +48,20 @@ Available now:
 - `metadata_extractor` has a CLI and a standalone local UI at `http://127.0.0.1:5106/meta/`.
 - `metadata_extractor` writes durable JSON artifacts under `data/intermediate/<doc_id>/pNNN.meta.json`.
 - `metadata_extractor` only lists documents and pages that already have OCR text, `should_extract=true`, and non-empty `pNNN.names.json`.
+- `place_extractor` can extract per-person place paths, preserve background mentions with `order=0`, and write one or more rows for `name place.csv`.
+- `place_extractor` has a CLI and a standalone local UI at `http://127.0.0.1:5107/places/`.
+- `place_extractor` can download the current page result or the selected person's final rows directly as CSV from the standalone UI.
+- `place_extractor` writes durable JSON artifacts under `data/intermediate/<doc_id>/pNNN.places.json`.
+- `place_extractor` only lists documents and pages that already have OCR text, `should_extract=true`, and non-empty `pNNN.names.json`.
 
 Not available yet:
 
 - `http://127.0.0.1:5000/`
 - Main Web App
 - Dashboard
-- Remaining place module and orchestration pages
+- Orchestration pages
 
-`http://127.0.0.1:5000/` becomes available after M6 / Phase 6, when the `web_app` service is implemented and added to Compose. During the current Phase 4.3 target, port 5000 is expected to fail.
+`http://127.0.0.1:5000/` becomes available after M6 / Phase 6, when the `web_app` service is implemented and added to Compose. During the current Phase 4.4 target, port 5000 is expected to fail.
 
 ## 2. Open the Project
 
@@ -967,7 +972,123 @@ The UI should show:
 - per-field validation statuses such as `ok`, `empty`, `cleared_invalid`, `cleared_missing_evidence`, and `inherited`
 - the rendered prompt and parsed response JSON for debugging
 
-## 18. Future Main Web UI Routes
+## 18. Phase 4.4 Place Extractor Testing
+
+Build and run the standalone place extractor UI:
+
+```bash
+docker compose --profile places up -d --build place_extractor
+```
+
+Open:
+
+```text
+http://127.0.0.1:5107/places/
+```
+
+Important UI behavior:
+
+- the document selector is a dropdown, not a freeform input
+- docs are discovered from `data/ocr_text/`
+- a page appears only when `page_classifier` has produced `pNNN.classify.json` with `should_extract=true`
+- the same page must also already have `pNNN.names.json` with at least one named person
+- if a doc is missing, run classifier first, then run name extraction for at least one page on that doc
+
+Health check:
+
+```bash
+curl http://127.0.0.1:5107/healthz
+```
+
+Expected:
+
+```json
+{"module":"place_extractor","status":"ok"}
+```
+
+Run the module unit tests:
+
+```bash
+docker build -f docker/ner.Dockerfile -t manumission-ner:phase4_4 .
+docker run --rm manumission-ner:phase4_4 python -m unittest discover -s /app/modules/place_extractor/tests -p "test_*.py"
+```
+
+Run one named person after classifier and names output exist:
+
+```bash
+curl -X POST http://127.0.0.1:5107/places/run-single/sample%20input%201/6/Mariam%20bint%20Yusuf \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+Expected highlights:
+
+```text
+"rows":
+"passes":
+"validation":
+"model_calls":
+```
+
+Run all named people on one page:
+
+```bash
+curl -X POST http://127.0.0.1:5107/places/run-page/sample%20input%201/6 \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+Run a whole-document extraction job:
+
+```bash
+curl -X POST http://127.0.0.1:5107/places/run-all/sample%20input%201 \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+Poll the returned `job_id` at:
+
+```text
+http://127.0.0.1:5107/places/jobs/<job_id>
+```
+
+Expected output artifacts:
+
+```text
+data/intermediate/sample input 1/
+  p001.classify.json
+  p001.names.json
+  p001.places.json
+  p002.classify.json
+  p002.names.json
+  p002.places.json
+  ...
+```
+
+The UI should show:
+
+- ordered route cards for positive-order steps
+- background mentions separated as `order=0`
+- OCR text with place evidence highlighted using explicit / derived / unknown colors
+- stage tabs for candidates, verified, date-enriched, and reconciled rows
+- final validation messages for route shape and date consistency
+- `Download Page CSV` and `Download Person CSV` buttons for the current page view
+- a `Clear All Results` button that deletes every saved `pNNN.places.json` for the selected doc after confirmation
+
+Direct CSV download endpoints:
+
+```bash
+curl -I "http://127.0.0.1:5107/places/download/sample%20input%201/6.csv"
+curl -I "http://127.0.0.1:5107/places/download/sample%20input%201/6.csv?name=Mariam%20bint%20Yusuf"
+```
+
+Clear all saved place results for one document:
+
+```bash
+curl -X POST "http://127.0.0.1:5107/places/clear-all/sample%20input%201"
+```
+
+## 19. Future Main Web UI Routes
 
 After M6 / Phase 6, the main Web App should expose these local routes:
 
@@ -986,9 +1107,9 @@ After M6 / Phase 6, the main Web App should expose these local routes:
 | Normalizer | `http://127.0.0.1:5000/normalizer/` | Rule playground |
 | Aggregator | `http://127.0.0.1:5000/aggregate/` | CSV preview and download |
 
-These routes are future targets, not current Phase 4.3 behavior.
+These routes are future targets, not current Phase 4.4 behavior.
 
-## 19. Running Tests
+## 20. Running Tests
 
 Shared-library tests:
 
@@ -1015,7 +1136,7 @@ Future module tests should follow this pattern:
 docker compose run --rm <module_service> python -m unittest discover -s src/modules/<module>/tests -p "test_*.py"
 ```
 
-## 20. Changing Models Later
+## 21. Changing Models Later
 
 To switch the text extraction model:
 
@@ -1062,7 +1183,7 @@ To switch the OCR model:
 
 Keep model tags exact. `qwen2.5:14b-instruct` and `qwen2.5:latest` are different models.
 
-## 21. Useful Commands
+## 22. Useful Commands
 
 Start GPU Ollama:
 
@@ -1113,7 +1234,7 @@ Run gateway verification:
 bash scripts/verify_gateway.sh
 ```
 
-## 22. Troubleshooting
+## 23. Troubleshooting
 
 ### `docker compose up -d ollama` fails with a GPU error
 
@@ -1245,7 +1366,7 @@ OLLAMA_LOAD_TIMEOUT=10m
 
 This avoids keeping the text model and OCR model in VRAM at the same time on a 16 GB GPU.
 
-## 23. Artifact Locations
+## 24. Artifact Locations
 
 | Artifact | Path |
 |---|---|

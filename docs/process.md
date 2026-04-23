@@ -323,13 +323,35 @@ curl http://127.0.0.1:5106/healthz
 
 ### 4.4 Module 07: place_extractor
 
-- Three LLM rounds: candidate, recall/verify, and final verification, plus date enrichment and rule reconciliation.
-- Similar complexity to `name_extractor`.
-- UI:
-  - select page and person
-  - show ordered route cards, with order 1 -> 2 -> 3 and `order=0` separated as background
-  - show evidence, date, and confidence for each place
-  - allow switching between candidate, verified, and reconciled stages
+Implemented on 2026-04-23 as the per-person place stage after `name_extractor`.
+
+Key implementation decisions:
+
+- Prompts live under `config/prompts/place_extractor/` and are loaded at runtime: `place_pass.txt`, `place_recall.txt`, `place_verify.txt`, and `place_date_enrich.txt`.
+- The stored page artifact is `data/intermediate/<doc_id>/pNNN.places.json`. It keeps page-level context, final `rows`, per-person `rows`, candidate/verified/date-enriched/reconciled stage payloads, validation summaries, and model-call stats.
+- Extraction combines two high-recall discovery calls (`pass1` plus `recall`) into one merged candidate stage, retries verifier adjudication once when route validation fails, then runs a date-enrichment pass and a final Python reconciliation layer.
+- Final reconciliation ports the old transport/forwarding heuristics, promotes confident route mentions, preserves `order=0` background mentions, and normalizes place/date fields through `08 normalizer`.
+- Running `run-single` for one person upserts that person's route result into an existing `pNNN.places.json` instead of dropping previously extracted people on the page.
+- The standalone UI only lists documents/pages that already have OCR text, `should_extract=true`, and at least one named person from `name_extractor`.
+
+UI:
+
+- document, page, and person selector
+- ordered route cards for positive-order steps, with background mentions shown separately
+- OCR text with place-evidence highlighting using date-confidence colors
+- stage tabs for candidates, verified, date-enriched, and reconciled rows
+- direct CSV download for the current page or selected person
+- validation table plus prompt/response inspection for the selected person
+
+Implemented verification:
+
+```bash
+docker compose --profile places config
+docker build -f docker/ner.Dockerfile -t manumission-ner:phase4_4 .
+docker run --rm manumission-ner:phase4_4 python -m unittest discover -s /app/modules/place_extractor/tests -p "test_*.py"
+docker compose --profile places up -d --build place_extractor
+curl http://127.0.0.1:5107/healthz
+```
 
 ### Verification for Phase 4
 
@@ -480,7 +502,9 @@ The project is split into seven phases, each with a clear demoable result. This 
 - [x] `name_extractor` CLI runs independently and writes `pNNN.names.json` under `data/intermediate/<doc_id>/`.
 - [x] `metadata_extractor` UI can show field cards, evidence highlighting, validation, and prompt/response details for a selected person.
 - [x] `metadata_extractor` CLI runs independently and writes `pNNN.meta.json` under `data/intermediate/<doc_id>/`.
-- [ ] Each module has its own UI and can show results for a selected page.
+- [x] `place_extractor` UI can show route cards, stage tables, evidence highlighting, and validation for a selected person.
+- [x] `place_extractor` CLI runs independently and writes `pNNN.places.json` under `data/intermediate/<doc_id>/`.
+- [x] Each module has its own UI and can show results for a selected page.
 - [ ] At least five test pages are manually reviewed with reasonable outputs.
 - [ ] Each module's CLI runs independently.
 

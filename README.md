@@ -6,7 +6,7 @@ Manumission App is an end-to-end modular Flask application for extracting inform
 
 The system has been refactored from monolithic Python scripts into modular services. Each module can run independently, be tested independently, and be visualized through its own UI.
 
-Current completed runtime target: M4 / Phase 4.3. Ollama gateway is available; `pdf_ingest` can upload or register PDFs, render page PNGs, write manifests, and show thumbnails at `http://127.0.0.1:5102/ingest/`; `normalizer` can demonstrate name, place, date, evidence, name comparison, and place dedupe rules at `http://127.0.0.1:5108/normalizer/`; `aggregator` can write final CSVs and preview/download them at `http://127.0.0.1:5109/aggregate/`; `ocr` can preview preprocessing and run OCR into `data/ocr_text/<doc_id>/` at `http://127.0.0.1:5103/ocr/` when the OCR model is available; `page_classifier` can classify OCR pages, show regex override hints, and persist `pNNN.classify.json` files at `http://127.0.0.1:5104/classify/`; `name_extractor` can run the five-stage subject-name pipeline, persist `pNNN.names.json`, explain dropped candidates, and rerun one downstream stage at `http://127.0.0.1:5105/names/`; and `metadata_extractor` can extract one validated `Detailed info.csv` row per named person, persist `pNNN.meta.json`, and inspect field-level evidence at `http://127.0.0.1:5106/meta/`.
+Current completed runtime target: M4 / Phase 4.4. Ollama gateway is available; `pdf_ingest` can upload or register PDFs, render page PNGs, write manifests, and show thumbnails at `http://127.0.0.1:5102/ingest/`; `normalizer` can demonstrate name, place, date, evidence, name comparison, and place dedupe rules at `http://127.0.0.1:5108/normalizer/`; `aggregator` can write final CSVs and preview/download them at `http://127.0.0.1:5109/aggregate/`; `ocr` can preview preprocessing and run OCR into `data/ocr_text/<doc_id>/` at `http://127.0.0.1:5103/ocr/` when the OCR model is available; `page_classifier` can classify OCR pages, show regex override hints, and persist `pNNN.classify.json` files at `http://127.0.0.1:5104/classify/`; `name_extractor` can run the five-stage subject-name pipeline, persist `pNNN.names.json`, explain dropped candidates, and rerun one downstream stage at `http://127.0.0.1:5105/names/`; `metadata_extractor` can extract one validated `Detailed info.csv` row per named person, persist `pNNN.meta.json`, and inspect field-level evidence at `http://127.0.0.1:5106/meta/`; and `place_extractor` can extract per-person place paths, persist `pNNN.places.json`, inspect candidate, verified, date-enriched, and reconciled route rows, and download the current page or selected person as CSV at `http://127.0.0.1:5107/places/`.
 
 ## Architecture
 
@@ -149,6 +149,20 @@ http://127.0.0.1:5106/meta/
 ```
 
 The metadata extractor reads OCR text from `data/ocr_text/<doc_id>/`, page-classifier results from `data/intermediate/<doc_id>/pNNN.classify.json`, and name results from `data/intermediate/<doc_id>/pNNN.names.json`. It writes `pNNN.meta.json`, stores one row per named person for `Detailed info.csv`, and keeps validation plus evidence alongside each extracted field for debugging.
+
+To run the current place extractor UI:
+
+```bash
+docker compose --profile places up -d --build place_extractor
+```
+
+Then open:
+
+```text
+http://127.0.0.1:5107/places/
+```
+
+The place extractor reads OCR text from `data/ocr_text/<doc_id>/`, page-classifier results from `data/intermediate/<doc_id>/pNNN.classify.json`, and name results from `data/intermediate/<doc_id>/pNNN.names.json`. It writes `pNNN.places.json`, stores one or more place rows per named person for `name place.csv`, keeps candidate, verified, date-enriched, and reconciled route rows for debugging, and exposes direct CSV download buttons for the current page or selected person.
 
 ## Usage
 

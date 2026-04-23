@@ -1,0 +1,729 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Place Extractor</title>
+    <link rel="stylesheet" href="{{ url_for('place_extractor.static', filename='place_extractor.css') }}">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">Module 07</p>
+          <h1>Place Extractor</h1>
+          <p>Extract per-person place paths, separate route steps from background mentions, and inspect candidate, verified, date-enriched, and reconciled outputs side by side.</p>
+        </div>
+        <div class="actions">
+          <button id="run-single">Extract This Person</button>
+          <button class="secondary" id="run-page">Extract Whole Page</button>
+          <button class="secondary" id="run-all">Extract Whole Doc</button>
+          <button class="secondary" id="download-page">Download Page CSV</button>
+          <button class="secondary" id="download-person">Download Person CSV</button>
+          <button class="danger" id="clear-results">Clear All Results</button>
+        </div>
+      </header>
+
+      <section class="controls">
+        <label>
+          Document
+          <select id="doc-select">
+            {% if not docs %}
+              <option value="">No docs with names found</option>
+            {% endif %}
+            {% for doc in docs %}
+              <option value="{{ doc.doc_id }}" {% if selected_doc_id == doc.doc_id %}selected{% endif %}>
+                {{ doc.doc_id }} - {{ doc.completed_pages }}/{{ doc.pages }} complete
+              </option>
+            {% endfor %}
+          </select>
+        </label>
+
+        <label>
+          Page
+          <select id="page-select">
+            {% if not pages %}
+              <option value="">No pages with names</option>
+            {% endif %}
+            {% for page in pages %}
+              <option value="{{ page.page }}" {% if selected_page == page.page %}selected{% endif %}>
+                p{{ "%03d"|format(page.page) }} - {{ page.report_type }}
+              </option>
+            {% endfor %}
+          </select>
+        </label>
+
+        <label>
+          Person
+          <select id="person-select">
+            {% if not people %}
+              <option value="">No named people</option>
+            {% endif %}
+            {% for person in people %}
+              <option value="{{ person }}" {% if selected_name == person %}selected{% endif %}>{{ person }}</option>
+            {% endfor %}
+          </select>
+        </label>
+
+        <label>
+          Model
+          <input id="model-input" placeholder="Optional override, e.g. qwen2.5:14b-instruct">
+        </label>
+      </section>
+
+      <div class="status-strip" id="status-line"></div>
+
+      <section class="summary-grid">
+        <article class="card">
+          <header>
+            <div>
+              <h2>Page Summary</h2>
+              <p id="summary-subtitle">Current page-level place output.</p>
+            </div>
+          </header>
+          <div class="card-body">
+            <div class="metric-grid">
+              <div class="metric">
+                <span>Rows</span>
+                <strong id="metric-rows">0</strong>
+              </div>
+              <div class="metric">
+                <span>People</span>
+                <strong id="metric-people">0</strong>
+              </div>
+              <div class="metric">
+                <span>Model Calls</span>
+                <strong id="metric-model">0</strong>
+              </div>
+              <div class="metric">
+                <span>Repair Calls</span>
+                <strong id="metric-repair">0</strong>
+              </div>
+            </div>
+            <div class="meta-line">
+              <span id="metric-elapsed">Elapsed: -</span>
+              <span id="metric-report-type">Report type: -</span>
+              <span id="metric-classifier">Classifier evidence: -</span>
+            </div>
+          </div>
+        </article>
+
+        <article class="card">
+          <header>
+            <div>
+              <h2>Current Rows</h2>
+              <p>All stored place rows for this page.</p>
+            </div>
+          </header>
+          <div class="card-body">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Place</th>
+                  <th>Order</th>
+                  <th>Arrival Date</th>
+                  <th>Confidence</th>
+                  <th>Time Info</th>
+                </tr>
+              </thead>
+              <tbody id="rows-table">
+                <tr><td colspan="6">No result yet.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </article>
+      </section>
+
+      <section class="grid">
+        <article class="card source-panel">
+          <header>
+            <div>
+              <h2>OCR Text With Place Evidence</h2>
+              <p id="source-subtitle">Highlights use date-confidence colors from the selected person's final rows.</p>
+            </div>
+          </header>
+          <pre id="source-html">{% if initial_page_data %}{{ initial_page_data.source_html|safe }}{% else %}No OCR text loaded yet.{% endif %}</pre>
+        </article>
+
+        <div class="stack">
+          <article class="card">
+            <header>
+              <div>
+                <h2>Route View</h2>
+                <p id="route-subtitle">Ordered route cards plus background mentions.</p>
+              </div>
+            </header>
+            <div class="card-body">
+              <div id="route-panel" class="route-panel">
+                <div class="empty">Select a person and run extraction to inspect route rows.</div>
+              </div>
+            </div>
+          </article>
+
+          <article class="card">
+            <header>
+              <div>
+                <h2>Stage Results</h2>
+                <p>Compare candidate, verified, date-enriched, and reconciled rows.</p>
+              </div>
+            </header>
+            <div class="card-body">
+              <div id="stage-tabs" class="tab-strip"></div>
+              <div id="stage-view" class="stage-view">
+                <div class="empty">No stage output yet.</div>
+              </div>
+            </div>
+          </article>
+
+          <article class="card">
+            <header>
+              <div>
+                <h2>Validation</h2>
+                <p>Final route checks run on the reconciled output.</p>
+              </div>
+            </header>
+            <div class="card-body">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>Rule</th>
+                    <th>Status</th>
+                    <th>Message</th>
+                  </tr>
+                </thead>
+                <tbody id="validation-rows">
+                  <tr><td colspan="3">No validation data yet.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </article>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      const initialData = {{ (initial_page_data or {}) | tojson }};
+      const STAGE_ORDER = ["candidate", "verified", "date_enrich", "reconciled"];
+      let activeStage = "reconciled";
+
+      const docSelect = document.getElementById("doc-select");
+      const pageSelect = document.getElementById("page-select");
+      const personSelect = document.getElementById("person-select");
+      const modelInput = document.getElementById("model-input");
+      const runSingleButton = document.getElementById("run-single");
+      const runPageButton = document.getElementById("run-page");
+      const runAllButton = document.getElementById("run-all");
+      const downloadPageButton = document.getElementById("download-page");
+      const downloadPersonButton = document.getElementById("download-person");
+      const clearResultsButton = document.getElementById("clear-results");
+      const statusLine = document.getElementById("status-line");
+      const summarySubtitle = document.getElementById("summary-subtitle");
+      const metricRows = document.getElementById("metric-rows");
+      const metricPeople = document.getElementById("metric-people");
+      const metricModel = document.getElementById("metric-model");
+      const metricRepair = document.getElementById("metric-repair");
+      const metricElapsed = document.getElementById("metric-elapsed");
+      const metricReportType = document.getElementById("metric-report-type");
+      const metricClassifier = document.getElementById("metric-classifier");
+      const rowsTable = document.getElementById("rows-table");
+      const sourceHtml = document.getElementById("source-html");
+      const sourceSubtitle = document.getElementById("source-subtitle");
+      const routeSubtitle = document.getElementById("route-subtitle");
+      const routePanel = document.getElementById("route-panel");
+      const stageTabs = document.getElementById("stage-tabs");
+      const stageView = document.getElementById("stage-view");
+      const validationRows = document.getElementById("validation-rows");
+
+      function selectedDoc() {
+        return docSelect.value;
+      }
+
+      function selectedPage() {
+        return pageSelect.value;
+      }
+
+      function selectedPerson() {
+        return personSelect.value;
+      }
+
+      function requestPayload() {
+        const body = {};
+        if (modelInput.value.trim()) {
+          body.model = modelInput.value.trim();
+        }
+        return body;
+      }
+
+      function setBusy(button, busy, label) {
+        button.disabled = busy;
+        button.textContent = label;
+      }
+
+      function downloadCsv(personOnly) {
+        if (!selectedDoc() || !selectedPage()) {
+          return;
+        }
+        if (personOnly && !selectedPerson()) {
+          return;
+        }
+        const params = new URLSearchParams();
+        if (personOnly) {
+          params.set("name", selectedPerson());
+        }
+        const suffix = params.toString() ? `?${params.toString()}` : "";
+        const scope = personOnly ? `${selectedPerson()} on ` : "";
+        statusLine.textContent = `Downloading CSV for ${scope}${selectedDoc()} p${String(selectedPage()).padStart(3, "0")}...`;
+        window.location.assign(`/places/download/${encodeURIComponent(selectedDoc())}/${selectedPage()}.csv${suffix}`);
+      }
+
+      async function loadDocs(preferredDoc = "") {
+        const currentDoc = preferredDoc || selectedDoc();
+        const response = await fetch("/places/docs");
+        if (!response.ok) {
+          return;
+        }
+        const data = await response.json();
+        docSelect.innerHTML = "";
+        if (!(data.docs || []).length) {
+          docSelect.innerHTML = '<option value="">No docs with names found</option>';
+          return;
+        }
+        for (const doc of data.docs) {
+          const option = document.createElement("option");
+          option.value = doc.doc_id;
+          option.textContent = `${doc.doc_id} - ${doc.completed_pages}/${doc.pages} complete`;
+          if (currentDoc && doc.doc_id === currentDoc) {
+            option.selected = true;
+          }
+          docSelect.appendChild(option);
+        }
+      }
+
+      async function loadPages(docId, preferredPage = "") {
+        if (!docId) {
+          pageSelect.innerHTML = '<option value="">No pages with names</option>';
+          return;
+        }
+        const response = await fetch(`/places/pages/${encodeURIComponent(docId)}`);
+        const data = await response.json();
+        pageSelect.innerHTML = "";
+        if (!data.pages.length) {
+          pageSelect.innerHTML = '<option value="">No pages with names</option>';
+          return;
+        }
+        for (const page of data.pages) {
+          const option = document.createElement("option");
+          option.value = String(page.page);
+          option.textContent = `p${String(page.page).padStart(3, "0")} - ${page.report_type}`;
+          if (preferredPage && String(page.page) === String(preferredPage)) {
+            option.selected = true;
+          }
+          pageSelect.appendChild(option);
+        }
+      }
+
+      async function loadPeople(docId, page, preferredName = "") {
+        if (!docId || !page) {
+          personSelect.innerHTML = '<option value="">No named people</option>';
+          return;
+        }
+        const response = await fetch(`/places/people/${encodeURIComponent(docId)}/${page}`);
+        const data = await response.json();
+        personSelect.innerHTML = "";
+        if (!data.people.length) {
+          personSelect.innerHTML = '<option value="">No named people</option>';
+          return;
+        }
+        for (const person of data.people) {
+          const option = document.createElement("option");
+          option.value = person;
+          option.textContent = person;
+          if (preferredName && person.toLowerCase() === preferredName.toLowerCase()) {
+            option.selected = true;
+          }
+          personSelect.appendChild(option);
+        }
+      }
+
+      async function loadResult(docId, page, name) {
+        if (!docId || !page) {
+          renderPayload({});
+          return;
+        }
+        statusLine.textContent = `Loading ${docId} p${String(page).padStart(3, "0")}...`;
+        const suffix = name ? `?name=${encodeURIComponent(name)}` : "";
+        const response = await fetch(`/places/result/${encodeURIComponent(docId)}/${page}${suffix}`);
+        if (!response.ok) {
+          statusLine.textContent = "Could not load place page.";
+          renderPayload({});
+          return;
+        }
+        renderPayload(await response.json());
+        statusLine.textContent = `Viewing ${docId} p${String(page).padStart(3, "0")}.`;
+      }
+
+      function renderPayload(payload) {
+        const result = payload.result || null;
+        const classify = payload.classify || {};
+        const selectedPersonRecord = payload.selected_person || null;
+        const names = payload.names || [];
+        sourceHtml.innerHTML = payload.source_html || "No OCR text loaded yet.";
+        sourceSubtitle.textContent = payload.doc_id
+          ? `${payload.doc_id} - p${String(payload.page).padStart(3, "0")} - ${payload.highlighted_count || 0} highlighted evidence span(s)`
+          : "Highlights use date-confidence colors from the selected person's final rows.";
+
+        metricReportType.textContent = `Report type: ${classify.report_type || "-"}`;
+        metricClassifier.textContent = `Classifier evidence: ${classify.evidence || "-"}`;
+
+        if (!result) {
+          summarySubtitle.textContent = "Current page-level place output.";
+          metricRows.textContent = "0";
+          metricPeople.textContent = String(names.length);
+          metricModel.textContent = "0";
+          metricRepair.textContent = "0";
+          metricElapsed.textContent = "Elapsed: -";
+          rowsTable.innerHTML = "<tr><td colspan='6'>No result yet.</td></tr>";
+          routePanel.innerHTML = "<div class='empty'>Select a person and run extraction to inspect route rows.</div>";
+          validationRows.innerHTML = "<tr><td colspan='3'>No validation data yet.</td></tr>";
+          stageTabs.innerHTML = "";
+          stageView.innerHTML = "<div class='empty'>No stage output yet.</div>";
+          routeSubtitle.textContent = "Ordered route cards plus background mentions.";
+          return;
+        }
+
+        metricRows.textContent = String((result.rows || []).length);
+        metricPeople.textContent = String((result.names || []).length);
+        metricModel.textContent = String(result.model_calls || 0);
+        metricRepair.textContent = String(result.repair_calls || 0);
+        metricElapsed.textContent = `Elapsed: ${result.elapsed_seconds || "-"}s`;
+        summarySubtitle.textContent = result.rows && result.rows.length
+          ? `${result.rows.length} place row(s) currently stored for this page.`
+          : "No place rows stored for this page yet.";
+
+        rowsTable.innerHTML = (result.rows || []).length
+          ? result.rows.map(row => `<tr>
+              <td>${escapeHtml(row.Name || "")}</td>
+              <td>${escapeHtml(row.Place || "-")}</td>
+              <td>${escapeHtml(row.Order ?? "-")}</td>
+              <td>${escapeHtml(row["Arrival Date"] || "-")}</td>
+              <td>${renderConfidence(row["Date Confidence"] || "")}</td>
+              <td>${escapeHtml(row["Time Info"] || "-")}</td>
+            </tr>`).join("")
+          : "<tr><td colspan='6'>No rows yet.</td></tr>";
+
+        if (!selectedPersonRecord) {
+          routePanel.innerHTML = "<div class='empty'>This person has not been extracted yet.</div>";
+          validationRows.innerHTML = "<tr><td colspan='3'>No validation data yet.</td></tr>";
+          stageTabs.innerHTML = "";
+          stageView.innerHTML = "<div class='empty'>No stage output yet.</div>";
+          routeSubtitle.textContent = "Select a person and run extraction to inspect route rows.";
+          return;
+        }
+
+        renderRoutes(selectedPersonRecord);
+        renderValidation(selectedPersonRecord.validation || []);
+        renderStages(selectedPersonRecord.passes || {});
+      }
+
+      function renderRoutes(person) {
+        const rows = person.rows || [];
+        const routeRows = rows.filter(row => Number(row.Order || 0) > 0).sort((a, b) => Number(a.Order || 0) - Number(b.Order || 0));
+        const backgroundRows = rows.filter(row => Number(row.Order || 0) === 0);
+        routeSubtitle.textContent = `${person.name} - ${person.model_calls || 0} model call(s), ${person.elapsed_seconds || "-"}s`;
+
+        if (!rows.length) {
+          routePanel.innerHTML = "<div class='empty'>No final place rows were extracted for this person.</div>";
+          return;
+        }
+
+        const routeHtml = routeRows.length
+          ? `<div class="route-track">${routeRows.map(renderRouteCard).join('<span class="route-arrow">&rarr;</span>')}</div>`
+          : `<div class="empty small">No positive-order route steps.</div>`;
+        const backgroundHtml = backgroundRows.length
+          ? `<div class="background-block">
+              <h3>Background Mentions</h3>
+              <div class="background-list">${backgroundRows.map(renderBackgroundCard).join("")}</div>
+            </div>`
+          : "";
+
+        routePanel.innerHTML = `${routeHtml}${backgroundHtml}`;
+      }
+
+      function renderRouteCard(row) {
+        return `<article class="route-card ${confidenceClass(row["Date Confidence"] || "")}">
+          <span class="route-order">${escapeHtml(row.Order ?? 0)}</span>
+          <strong>${escapeHtml(row.Place || "-")}</strong>
+          <small>${escapeHtml(row["Arrival Date"] || row["Time Info"] || "No date")}</small>
+          <p>${escapeHtml(row._evidence || "-")}</p>
+        </article>`;
+      }
+
+      function renderBackgroundCard(row) {
+        return `<article class="background-card">
+          <strong>${escapeHtml(row.Place || "-")}</strong>
+          <small>order 0</small>
+          <p>${escapeHtml(row._evidence || "-")}</p>
+        </article>`;
+      }
+
+      function renderValidation(items) {
+        validationRows.innerHTML = items.length
+          ? items.map(item => `<tr>
+              <td>${escapeHtml(item.rule || "-")}</td>
+              <td><span class="tag ${escapeHtml(item.status || "empty")}">${escapeHtml(item.status || "empty")}</span></td>
+              <td>${escapeHtml(item.message || "-")}</td>
+            </tr>`).join("")
+          : "<tr><td colspan='3'>No validation data yet.</td></tr>";
+      }
+
+      function renderStages(passes) {
+        const available = STAGE_ORDER.filter(stage => passes[stage]);
+        if (!available.length) {
+          stageTabs.innerHTML = "";
+          stageView.innerHTML = "<div class='empty'>No stage output yet.</div>";
+          return;
+        }
+        if (!available.includes(activeStage)) {
+          activeStage = available[available.length - 1];
+        }
+        stageTabs.innerHTML = available.map(stage => {
+          const label = passes[stage].label || stage;
+          return `<button class="tab ${stage === activeStage ? "active" : ""}" data-stage="${stage}">${escapeHtml(label)}</button>`;
+        }).join("");
+        for (const button of stageTabs.querySelectorAll("button[data-stage]")) {
+          button.addEventListener("click", () => {
+            activeStage = button.dataset.stage;
+            renderStages(passes);
+          });
+        }
+        stageView.innerHTML = renderStage(passes[activeStage], activeStage);
+      }
+
+      function renderStage(stage, stageName) {
+        const rows = stage.rows || [];
+        const noteParts = [];
+        if (stage.issue) {
+          noteParts.push(`Issue: ${stage.issue}`);
+        }
+        if (stage.fallback_reason) {
+          noteParts.push(stage.fallback_reason);
+        }
+        const notes = noteParts.length ? `<p class="stage-note">${escapeHtml(noteParts.join(" "))}</p>` : "";
+        const table = rows.length
+          ? `<table class="data-table compact">
+              <thead>
+                <tr>
+                  <th>Place</th>
+                  <th>Order</th>
+                  <th>Arrival Date</th>
+                  <th>Confidence</th>
+                  <th>Time Info</th>
+                  <th>Evidence</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${rows.map(row => `<tr>
+                  <td>${escapeHtml(row.Place || "-")}</td>
+                  <td>${escapeHtml(row.Order ?? "-")}</td>
+                  <td>${escapeHtml(row["Arrival Date"] || "-")}</td>
+                  <td>${renderConfidence(row["Date Confidence"] || "")}</td>
+                  <td>${escapeHtml(row["Time Info"] || "-")}</td>
+                  <td>${escapeHtml(row._evidence || "-")}</td>
+                </tr>`).join("")}
+              </tbody>
+            </table>`
+          : "<div class='empty small'>No rows at this stage.</div>";
+
+        const details = [];
+        if (stage.runs) {
+          for (const run of stage.runs) {
+            details.push(renderRunDetails(run));
+          }
+        }
+        if (stage.attempts) {
+          for (const attempt of stage.attempts) {
+            details.push(renderRunDetails(attempt));
+          }
+        }
+        if (stage.prompt_name || stage.rendered_prompt || stage.response_json) {
+          details.push(renderRunDetails(stage));
+        }
+        const debug = details.length ? `<div class="debug-stack">${details.join("")}</div>` : "";
+        return `${notes}${table}${debug}`;
+      }
+
+      function renderRunDetails(run) {
+        const prompt = run.rendered_prompt || "";
+        const response = run.response_json && Object.keys(run.response_json).length
+          ? JSON.stringify(run.response_json, null, 2)
+          : "No parsed response saved.";
+        return `<details class="debug-card">
+          <summary>${escapeHtml(run.label || run.stage || "Run")} ${run.prompt_name ? `- ${escapeHtml(run.prompt_name)}` : ""}</summary>
+          <pre>${escapeHtml(prompt || "No prompt saved.")}</pre>
+          <pre>${escapeHtml(response)}</pre>
+        </details>`;
+      }
+
+      function renderConfidence(value) {
+        const label = value || "unknown";
+        return `<span class="confidence ${confidenceClass(value)}">${escapeHtml(label)}</span>`;
+      }
+
+      function confidenceClass(value) {
+        return {
+          explicit: "confidence-explicit",
+          derived_from_doc: "confidence-derived",
+          unknown: "confidence-unknown",
+          "": "confidence-unknown",
+        }[value || ""] || "confidence-unknown";
+      }
+
+      async function runSingle() {
+        if (!selectedDoc() || !selectedPage() || !selectedPerson()) {
+          return;
+        }
+        setBusy(runSingleButton, true, "Extracting...");
+        statusLine.textContent = `Extracting places for ${selectedPerson()} on ${selectedDoc()} p${String(selectedPage()).padStart(3, "0")}...`;
+        const response = await fetch(`/places/run-single/${encodeURIComponent(selectedDoc())}/${selectedPage()}/${encodeURIComponent(selectedPerson())}`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify(requestPayload()),
+        });
+        setBusy(runSingleButton, false, "Extract This Person");
+        if (!response.ok) {
+          statusLine.textContent = "Place extraction failed.";
+          return;
+        }
+        renderPayload(await response.json());
+        await loadDocs(selectedDoc());
+        statusLine.textContent = `Saved places for ${selectedPerson()}.`;
+      }
+
+      async function runPage() {
+        if (!selectedDoc() || !selectedPage()) {
+          return;
+        }
+        setBusy(runPageButton, true, "Extracting Page...");
+        statusLine.textContent = `Extracting places for all names on ${selectedDoc()} p${String(selectedPage()).padStart(3, "0")}...`;
+        const response = await fetch(`/places/run-page/${encodeURIComponent(selectedDoc())}/${selectedPage()}`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({...requestPayload(), name: selectedPerson()}),
+        });
+        setBusy(runPageButton, false, "Extract Whole Page");
+        if (!response.ok) {
+          statusLine.textContent = "Whole-page extraction failed.";
+          return;
+        }
+        renderPayload(await response.json());
+        await loadDocs(selectedDoc());
+        statusLine.textContent = `Saved p${String(selectedPage()).padStart(3, "0")}.places.json`;
+      }
+
+      async function runAll() {
+        if (!selectedDoc()) {
+          return;
+        }
+        setBusy(runAllButton, true, "Extracting Whole Doc...");
+        statusLine.textContent = `Starting whole-document place extraction for ${selectedDoc()}...`;
+        const response = await fetch(`/places/run-all/${encodeURIComponent(selectedDoc())}`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({...requestPayload(), resume: true}),
+        });
+        if (!response.ok) {
+          setBusy(runAllButton, false, "Extract Whole Doc");
+          statusLine.textContent = "Could not start background job.";
+          return;
+        }
+        const job = await response.json();
+        await pollJob(job.job_id);
+      }
+
+      async function pollJob(jobId) {
+        const response = await fetch(`/places/jobs/${jobId}`);
+        const job = await response.json();
+        if (job.status === "running") {
+          statusLine.textContent = `Job ${jobId} is still running...`;
+          window.setTimeout(() => pollJob(jobId), 1000);
+          return;
+        }
+        setBusy(runAllButton, false, "Extract Whole Doc");
+        if (job.status === "done") {
+          statusLine.textContent = `Whole-document extraction finished: ${job.manifest.completed_pages} done, ${job.manifest.skipped_pages} skipped, ${job.manifest.error_pages} errors.`;
+          await loadDocs(selectedDoc());
+          await loadPages(selectedDoc(), selectedPage());
+          await loadPeople(selectedDoc(), selectedPage(), selectedPerson());
+          await loadResult(selectedDoc(), selectedPage(), selectedPerson());
+          return;
+        }
+        statusLine.textContent = `Job failed: ${job.error || "unknown error"}`;
+      }
+
+      async function clearAllResults() {
+        if (!selectedDoc()) {
+          return;
+        }
+        const docId = selectedDoc();
+        const page = selectedPage();
+        const person = selectedPerson();
+        if (!window.confirm(`Clear all saved place results for ${docId}? This deletes every pNNN.places.json file for the current document.`)) {
+          return;
+        }
+        setBusy(clearResultsButton, true, "Clearing...");
+        statusLine.textContent = `Clearing saved place results for ${docId}...`;
+        const response = await fetch(`/places/clear-all/${encodeURIComponent(docId)}`, {
+          method: "POST",
+        });
+        setBusy(clearResultsButton, false, "Clear All Results");
+        if (!response.ok) {
+          statusLine.textContent = "Could not clear saved place results.";
+          return;
+        }
+        const payload = await response.json();
+        await loadDocs(docId);
+        await loadPages(docId, page);
+        await loadPeople(docId, selectedPage(), person);
+        await loadResult(docId, selectedPage(), person);
+        statusLine.textContent = `Cleared ${payload.deleted_files || 0} saved place result file(s) for ${docId}.`;
+      }
+
+      function escapeHtml(value) {
+        return String(value)
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;");
+      }
+
+      docSelect.addEventListener("change", async () => {
+        await loadPages(selectedDoc());
+        await loadPeople(selectedDoc(), selectedPage());
+        await loadResult(selectedDoc(), selectedPage(), selectedPerson());
+      });
+
+      pageSelect.addEventListener("change", async () => {
+        await loadPeople(selectedDoc(), selectedPage());
+        await loadResult(selectedDoc(), selectedPage(), selectedPerson());
+      });
+
+      personSelect.addEventListener("change", async () => {
+        await loadResult(selectedDoc(), selectedPage(), selectedPerson());
+      });
+
+      runSingleButton.addEventListener("click", runSingle);
+      runPageButton.addEventListener("click", runPage);
+      runAllButton.addEventListener("click", runAll);
+      downloadPageButton.addEventListener("click", () => downloadCsv(false));
+      downloadPersonButton.addEventListener("click", () => downloadCsv(true));
+      clearResultsButton.addEventListener("click", clearAllResults);
+
+      if (initialData && Object.keys(initialData).length) {
+        renderPayload(initialData);
+        statusLine.textContent = `Viewing ${initialData.doc_id} p${String(initialData.page).padStart(3, "0")}.`;
+      } else {
+        renderPayload({});
+      }
+    </script>
+  </body>
+</html>

@@ -7,6 +7,16 @@ from shared.text_utils import normalize_ws, strip_accents
 
 from .vocabulary import PLACE_MAP, PLACE_STOPWORDS
 
+PLACE_PROSE_MARKERS = {
+    "without",
+    "pressure",
+    "slightest",
+    "either",
+    "would",
+    "find",
+    "way",
+}
+
 
 def normalize_place(place: str) -> str:
     if not place:
@@ -37,6 +47,11 @@ def is_valid_place(place: str) -> bool:
     if low in PLACE_STOPWORDS or low in {"there", "here", "office", "agency", "residency"}:
         return False
     if len(s.split()) > 6:
+        return False
+    words = [word for word in re.findall(r"[a-z]+", low)]
+    if words and words[0] in {"without", "if", "when"}:
+        return False
+    if len(words) >= 4 and any(word in PLACE_PROSE_MARKERS for word in words):
         return False
     return not bool(re.search(r"\b(h\.m\.s\.?|s\.s\.?|steamship|ship|dhow|vessel|boat)\b", low))
 

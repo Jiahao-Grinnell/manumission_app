@@ -314,6 +314,50 @@ services:
       retries: 12
       start_period: 10s
 
+  place_extractor:
+    build:
+      context: .
+      dockerfile: docker/ner.Dockerfile
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      DATA_ROOT: /data
+      PROMPT_DIR: /app/config/prompts
+      OLLAMA_URL: http://ollama:11434/api/generate
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:14b-instruct}
+      FLASK_ENV: production
+    user: "10001:10001"
+    volumes:
+      - ./data:/data
+    networks:
+      - llm_internal
+      - llm_frontend
+    ports:
+      - "127.0.0.1:5107:5107"
+    profiles:
+      - places
+      - standalone
+      - all
+    command: >
+      gunicorn -b 0.0.0.0:5107 -w 1 --timeout 1200
+      'modules.place_extractor.standalone:create_app()'
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:5107/healthz', timeout=2).read()\"",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
 networks:
   llm_internal:
     internal: true

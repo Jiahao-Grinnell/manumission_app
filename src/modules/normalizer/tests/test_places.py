@@ -17,6 +17,7 @@ class PlaceTests(unittest.TestCase):
     def test_rejects_ship_names_and_generic_words(self) -> None:
         self.assertFalse(is_valid_place("H.M.S. Lawrence"))
         self.assertFalse(is_valid_place("agency"))
+        self.assertFalse(is_valid_place("Without The Slightest Pressure On Either"))
 
     def test_dedupe_place_rows_merges_dates_and_reorders(self) -> None:
         rows = dedupe_place_rows(
