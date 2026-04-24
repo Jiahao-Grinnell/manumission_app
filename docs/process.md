@@ -373,6 +373,8 @@ Milestone M4: all business modules can each run and be inspected.
 
 At this point, every module that does real work exists. Now connect them.
 
+Status: implemented on 2026-04-24 as a standalone dashboard under `http://127.0.0.1:5110/orchestrate/`, with persistent `job.json` state, `pipeline.log`, `events.jsonl`, background execution, server-rendered initial job state, live SSE updates with polling fallback, visible connection/error status, and stale-job recovery that converts orphaned `running` jobs to `paused`. Code and dashboard are in place; full-document manual milestone sign-off is still pending.
+
 ### Tasks
 
 - `pipeline.py`: `run_document(doc_id)` calls modules in order through the file-system contract.
@@ -381,17 +383,33 @@ At this point, every module that does real work exists. Now connect them.
 - Idempotency: if a module artifact already exists, skip the rerun.
 - Blueprint `/orchestrate/*`:
   - `POST /orchestrate/run`: start a job
+  - `POST /orchestrate/pause/<job_id>`: soft-pause after the current stage
   - `GET /orchestrate/status/<job_id>`: current status
-  - `GET /orchestrate/stream/<job_id>`: SSE stream with live logs
+  - `GET /orchestrate/stream/<job_id>`: SSE live-update channel used by the dashboard, with `/status` polling as fallback
+  - `POST /orchestrate/clear-results/<doc_id>`: remove generated artifacts while keeping the source PDF
+  - `GET /orchestrate/outputs/<job_id>`: preview the current final outputs
 - Dashboard UI:
+  - current job summary, per-page table, and live log are visible immediately on first page load
   - one row per page
   - six status cells per row: ingest, ocr, classify, names, meta+places, aggregate
   - clicking a status cell opens the corresponding module UI for that page
   - live log tail in the lower-right area
+  - visible client connection/error status for live updates
+  - pause, resume, cancel, and clear-results controls
+  - final CSV preview and download area
 
 ### Verification
 
-Upload a real PDF, run it end to end, and watch the dashboard. Each status cell should turn done in order, and final CSV files should be written.
+Upload a real PDF, run it end to end, and watch the dashboard. The current job state should already be visible on first load, each status cell should turn done in order, stream interruptions should fall back to status polling rather than freezing the page, and final CSV files should be written.
+
+Implemented verification:
+
+```bash
+docker build -f docker/web.Dockerfile -t manumission-web:phase5 .
+docker run --rm manumission-web:phase5 python -m unittest discover -s /app/orchestrator/tests -p "test_*.py"
+docker compose --profile orchestrator up -d --build orchestrator
+curl http://127.0.0.1:5110/healthz
+```
 
 Milestone M5: end-to-end execution works.
 

@@ -6,7 +6,7 @@ Manumission App is an end-to-end modular Flask application for extracting inform
 
 The system has been refactored from monolithic Python scripts into modular services. Each module can run independently, be tested independently, and be visualized through its own UI.
 
-Current completed runtime target: M4 / Phase 4.4. Ollama gateway is available; `pdf_ingest` can upload or register PDFs, render page PNGs, write manifests, and show thumbnails at `http://127.0.0.1:5102/ingest/`; `normalizer` can demonstrate name, place, date, evidence, name comparison, and place dedupe rules at `http://127.0.0.1:5108/normalizer/`; `aggregator` can write final CSVs and preview/download them at `http://127.0.0.1:5109/aggregate/`; `ocr` can preview preprocessing and run OCR into `data/ocr_text/<doc_id>/` at `http://127.0.0.1:5103/ocr/` when the OCR model is available; `page_classifier` can classify OCR pages, show regex override hints, and persist `pNNN.classify.json` files at `http://127.0.0.1:5104/classify/`; `name_extractor` can run the five-stage subject-name pipeline, persist `pNNN.names.json`, explain dropped candidates, and rerun one downstream stage at `http://127.0.0.1:5105/names/`; `metadata_extractor` can extract one validated `Detailed info.csv` row per named person, persist `pNNN.meta.json`, and inspect field-level evidence at `http://127.0.0.1:5106/meta/`; and `place_extractor` can extract per-person place paths, persist `pNNN.places.json`, inspect candidate, verified, date-enriched, and reconciled route rows, download the current page or selected person as CSV, and clear all saved place results for the selected document at `http://127.0.0.1:5107/places/`.
+Current completed runtime target: M5 / Phase 5. Ollama gateway is available; `pdf_ingest` can upload or register PDFs, render page PNGs, write manifests, and show thumbnails at `http://127.0.0.1:5102/ingest/`; `normalizer` can demonstrate name, place, date, evidence, name comparison, and place dedupe rules at `http://127.0.0.1:5108/normalizer/`; `aggregator` can write final CSVs and preview/download them at `http://127.0.0.1:5109/aggregate/`; `ocr` can preview preprocessing and run OCR into `data/ocr_text/<doc_id>/` at `http://127.0.0.1:5103/ocr/` when the OCR model is available; `page_classifier` can classify OCR pages, show regex override hints, and persist `pNNN.classify.json` files at `http://127.0.0.1:5104/classify/`; `name_extractor` can run the five-stage subject-name pipeline, persist `pNNN.names.json`, explain dropped candidates, and rerun one downstream stage at `http://127.0.0.1:5105/names/`; `metadata_extractor` can extract one validated `Detailed info.csv` row per named person, persist `pNNN.meta.json`, and inspect field-level evidence at `http://127.0.0.1:5106/meta/`; `place_extractor` can extract per-person place paths, persist `pNNN.places.json`, inspect candidate, verified, date-enriched, and reconciled route rows, download the current page or selected person as CSV, and clear all saved place results for the selected document at `http://127.0.0.1:5107/places/`; and `orchestrator` can run a document end to end, persist job state under `data/logs/<doc_id>/`, render the current job summary and per-page table immediately on first load, keep progress updating through SSE with polling fallback, show dashboard connection status, pause after the current stage, auto-coerce stale `running` jobs to `paused` after restart or worker loss so they can be resumed safely, clear all generated artifacts for a document while keeping the source PDF, and preview/download the final CSV outputs directly at `http://127.0.0.1:5110/orchestrate/`.
 
 ## Architecture
 
@@ -163,6 +163,20 @@ http://127.0.0.1:5107/places/
 ```
 
 The place extractor reads OCR text from `data/ocr_text/<doc_id>/`, page-classifier results from `data/intermediate/<doc_id>/pNNN.classify.json`, and name results from `data/intermediate/<doc_id>/pNNN.names.json`. It writes `pNNN.places.json`, stores one or more place rows per named person for `name place.csv`, keeps candidate, verified, date-enriched, and reconciled route rows for debugging, exposes direct CSV download buttons for the current page or selected person, and includes a `Clear All Results` action that removes saved `pNNN.places.json` outputs for the selected document after confirmation.
+
+To run the current orchestration dashboard:
+
+```bash
+docker compose --profile orchestrator up -d --build orchestrator
+```
+
+Then open:
+
+```text
+http://127.0.0.1:5110/orchestrate/
+```
+
+The orchestrator can upload or select an existing PDF, run the full pipeline in order, persist `job.json`, `pipeline.log`, and `events.jsonl` under `data/logs/<doc_id>/`, show the current job summary, per-page status grid, and log tail immediately on page load, keep the dashboard refreshed through SSE plus status polling fallback, expose visible live-update connection/error state, pause after the current stage, mark orphaned `running` jobs as `paused` after service restart or worker loss so they can be resumed safely, clear generated artifacts for the selected document, and preview/download the current final CSV outputs from the dashboard.
 
 ## Usage
 

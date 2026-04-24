@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Pipeline Dashboard</title>
+    <link rel="stylesheet" href="{{ url_for('orchestrator.static', filename='dashboard.css', v=asset_version) }}">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">Module 10</p>
+          <h1>Pipeline Dashboard</h1>
+          <p>Run a full document from PDF through OCR, classification, names, metadata, places, and final aggregation while watching per-page status update live.</p>
+        </div>
+        <div class="hero-actions">
+          <button class="secondary" id="resume-job" data-doc-id="{{ (selected_job or {}).get('doc_id', '') }}">Resume</button>
+          <button class="secondary" id="pause-job" data-job-id="{{ (selected_job or {}).get('job_id', '') }}">Pause</button>
+          <button class="danger" id="cancel-job" data-job-id="{{ (selected_job or {}).get('job_id', '') }}">Cancel</button>
+          <button class="danger" id="clear-results" data-doc-id="{{ (selected_job or {}).get('doc_id', '') }}">Clear Results</button>
+        </div>
+      </header>
+
+      <section class="launch-grid">
+        <form id="upload-form" class="card form-card">
+          <h2>Upload And Run</h2>
+          <label>
+            PDF
+            <input type="file" name="pdf" accept=".pdf,application/pdf" required>
+          </label>
+          <label>
+            Optional Doc ID
+            <input type="text" name="doc_id" placeholder="Defaults to filename stem">
+          </label>
+          <div class="inline-fields">
+            <label>
+              DPI
+              <input type="number" name="dpi" value="300" min="72" max="600">
+            </label>
+            <label>
+              Resume
+              <select name="resume">
+                <option value="true" selected>Yes</option>
+                <option value="false">No</option>
+              </select>
+            </label>
+          </div>
+          <button type="submit">Start End-To-End Run</button>
+        </form>
+
+        <form id="existing-form" class="card form-card">
+          <h2>Run Existing PDF</h2>
+          <label>
+            Registered PDF
+            <select name="source_pdf">
+              {% if not input_pdfs %}
+                <option value="">No PDFs in data/input_pdfs</option>
+              {% endif %}
+              {% for item in input_pdfs %}
+                <option value="{{ item.name }}">{{ item.name }} ({{ item.size_bytes }} bytes)</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>
+            Optional Doc ID
+            <input type="text" name="doc_id" placeholder="Defaults to source filename stem">
+          </label>
+          <div class="inline-fields">
+            <label>
+              OCR Model
+              <input type="text" name="ocr_model" placeholder="glm-ocr:latest">
+            </label>
+            <label>
+              Text Model
+              <input type="text" name="text_model" placeholder="qwen2.5:14b-instruct">
+            </label>
+          </div>
+          <button type="submit">Run Registered PDF</button>
+        </form>
+      </section>
+
+      <section class="workspace">
+        <aside class="sidebar card">
+          <header>
+            <div>
+              <h2>Recent Jobs</h2>
+              <p>Pick a job to inspect or resume.</p>
+            </div>
+          </header>
+          <div class="job-list" id="job-list">
+            {% if not jobs %}
+              <p class="empty">No jobs yet.</p>
+            {% endif %}
+            {% for job in jobs %}
+              <a class="job-pill {% if selected_job_id == job.job_id %}active{% endif %}" href="{{ url_for('orchestrator.index', job_id=job.job_id) }}">
+                <strong>{{ job.doc_id }}</strong>
+                <span>{{ job.status }}</span>
+              </a>
+            {% endfor %}
+          </div>
+        </aside>
+
+        <section class="main-stack">
+          <article class="card summary-card">
+            <header>
+              <div>
+                <h2 id="summary-title">{% if selected_job.get('doc_id') %}Current Job - {{ selected_job.get('doc_id') }}{% else %}Current Job{% endif %}</h2>
+                <p id="summary-subtitle">{% if selected_job.get('job_id') %}Job {{ selected_job.get('job_id') }}{% else %}Select or start a job to load pipeline progress.{% endif %}</p>
+                <p class="client-status" id="client-status">{% if selected_job_id %}Loading live updates...{% else %}No live job selected.{% endif %}</p>
+                <p class="client-error" id="client-error" hidden></p>
+              </div>
+            </header>
+            <div class="summary-grid" id="summary-grid">
+              <div class="metric"><span>Status</span><strong id="metric-status">{{ selected_job.get('status') or '-' }}</strong></div>
+              <div class="metric"><span>Document</span><strong id="metric-doc">{{ selected_job.get('doc_id') or '-' }}</strong></div>
+              <div class="metric"><span>Total Pages</span><strong id="metric-pages">{{ selected_job.get('total_pages') or 0 }}</strong></div>
+              <div class="metric"><span>Current Stage</span><strong id="metric-stage">{{ selected_job.get('current_stage') or '-' }}</strong></div>
+            </div>
+            <div class="progress-list" id="progress-list">
+              {% if progress_rows and selected_job.get('pages') %}
+                {% for row in progress_rows %}
+                  <div class="progress-row">
+                    <div class="progress-meta">
+                      <strong>{{ row.label }}</strong>
+                      <span>{{ row.completed }}/{{ row.total }} complete{% if row.failed %}, {{ row.failed }} failed{% endif %}</span>
+                    </div>
+                    <div class="progress-track"><div class="progress-fill" style="width:{{ row.percent }}%"></div></div>
+                  </div>
+                {% endfor %}
+              {% else %}
+                <div class="empty">No stage progress yet.</div>
+              {% endif %}
+            </div>
+          </article>
+
+          <article class="card table-card">
+            <header>
+              <div>
+                <h2>Per-Page Status</h2>
+                <p>Click a stage cell to jump into the corresponding module UI for that page.</p>
+              </div>
+            </header>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Page</th>
+                    <th>Ingest</th>
+                    <th>OCR</th>
+                    <th>Classify</th>
+                    <th>Names</th>
+                    <th>Meta + Places</th>
+                    <th>Aggregate</th>
+                    <th>Notes</th>
+                  </tr>
+                </thead>
+                <tbody id="page-rows">
+                  {% if selected_job.get('pages') %}
+                    {% for page in selected_job.get('pages', []) %}
+                      <tr>
+                        <td><a class="page-link" href="{{ page.get('links', {}).get('ocr', '#') }}" target="_blank" rel="noreferrer">p{{ '%03d'|format(page.get('page', 0)) }}</a></td>
+                        {% for stage in ['ingest', 'ocr', 'classify', 'names'] %}
+                          {% set info = page.get(stage, {}) %}
+                          <td><a class="status-pill state-{{ (info.get('state') or 'pending')|replace('_', '-') }}" href="{{ page.get('links', {}).get(stage, '#') }}" title="{{ info.get('detail') or info.get('error') or '' }}" target="_blank" rel="noreferrer">{{ info.get('state') or 'pending' }}</a></td>
+                        {% endfor %}
+                        <td>
+                          <div class="meta-place">
+                            {% for stage in ['meta', 'places'] %}
+                              {% set info = page.get(stage, {}) %}
+                              <a class="status-pill state-{{ (info.get('state') or 'pending')|replace('_', '-') }}" href="{{ page.get('links', {}).get(stage, '#') }}" title="{{ info.get('detail') or info.get('error') or '' }}" target="_blank" rel="noreferrer">{{ info.get('state') or 'pending' }}</a>
+                            {% endfor %}
+                          </div>
+                        </td>
+                        {% set aggregate = page.get('aggregate', {}) %}
+                        <td><a class="status-pill state-{{ (aggregate.get('state') or 'pending')|replace('_', '-') }}" href="{{ page.get('links', {}).get('aggregate', '#') }}" title="{{ aggregate.get('detail') or aggregate.get('error') or '' }}" target="_blank" rel="noreferrer">{{ aggregate.get('state') or 'pending' }}</a></td>
+                        <td class="note-cell">{{ page.get('note') or '' }}</td>
+                      </tr>
+                    {% endfor %}
+                  {% elif selected_job_id %}
+                    <tr><td colspan="8">No page rows yet.</td></tr>
+                  {% else %}
+                    <tr><td colspan="8">No job loaded yet.</td></tr>
+                  {% endif %}
+                </tbody>
+              </table>
+            </div>
+          </article>
+
+          <article class="card log-card">
+            <header>
+              <div>
+                <h2>Live Log Tail</h2>
+                <p>Recent pipeline messages appear here while the job is running.</p>
+              </div>
+            </header>
+            <pre id="log-tail">{% if selected_job.get('log_tail') %}{{ selected_job.get('log_tail', [])|join('\n') }}{% else %}No log output yet.{% endif %}</pre>
+          </article>
+
+          <article class="card output-card">
+            <header>
+              <div>
+                <h2>Final Outputs</h2>
+                <p>Preview the current CSV outputs for this document and download them directly from the dashboard.</p>
+              </div>
+            </header>
+            <div class="output-summary" id="output-summary">
+              <div class="empty">No aggregation summary yet.</div>
+            </div>
+            <div class="output-grid" id="output-results">
+              <div class="empty">No final outputs yet.</div>
+            </div>
+          </article>
+        </section>
+      </section>
+    </main>
+
+    <script>
+      window.__ORCH_INITIAL_JOB__ = {{ (selected_job or {}) | tojson }};
+      window.__ORCH_INITIAL_JOB_ID__ = {{ (selected_job_id or "") | tojson }};
+      window.__ORCH_STATUS_URL__ = "{{ url_for('orchestrator.status', job_id='__JOB_ID__') }}";
+      window.__ORCH_RUN_URL__ = "{{ url_for('orchestrator.run') }}";
+      window.__ORCH_RESUME_URL__ = "{{ url_for('orchestrator.resume', doc_id='__DOC_ID__') }}";
+      window.__ORCH_PAUSE_URL__ = "{{ url_for('orchestrator.pause', job_id='__JOB_ID__') }}";
+      window.__ORCH_CANCEL_URL__ = "{{ url_for('orchestrator.cancel', job_id='__JOB_ID__') }}";
+      window.__ORCH_CLEAR_RESULTS_URL__ = "{{ url_for('orchestrator.clear_results', doc_id='__DOC_ID__') }}";
+      window.__ORCH_STREAM_URL__ = "{{ url_for('orchestrator.stream', job_id='__JOB_ID__') }}";
+      window.__ORCH_OUTPUTS_URL__ = "{{ url_for('orchestrator.outputs', job_id='__JOB_ID__') }}";
+      window.__ORCH_INDEX_URL__ = "{{ url_for('orchestrator.index') }}";
+      window.__ORCH_JOBS_URL__ = "{{ url_for('orchestrator.jobs') }}";
+    </script>
+    <script src="{{ url_for('orchestrator.static', filename='dashboard.js', v=asset_version) }}"></script>
+  </body>
+</html>

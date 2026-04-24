@@ -87,6 +87,7 @@ Supporting services:
 
 10 orchestrator
   Schedules the whole pipeline and tracks per-page progress.
+  Current standalone dashboard: `http://127.0.0.1:5110/orchestrate/`
 
 11 web_app
   Main Flask application on 127.0.0.1 only.

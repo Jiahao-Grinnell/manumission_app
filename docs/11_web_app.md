@@ -2,6 +2,8 @@
 
 > Main Flask application. Mounts every module blueprint into one unified web UI, and is the **only** service that exposes a port to the host (`127.0.0.1` only).
 
+Implementation status as of 2026-04-24: not yet implemented. Phase 5 currently uses the standalone orchestrator dashboard at `http://127.0.0.1:5110/orchestrate/`; this document remains the Phase 6 target design.
+
 ## 1. Purpose
 
 Provide the user entry point:

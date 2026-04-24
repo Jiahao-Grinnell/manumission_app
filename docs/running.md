@@ -17,7 +17,7 @@ The project is being built phase by phase. Do not expect every URL to work yet.
 Current completed runtime target:
 
 ```text
-M4 / Phase 4.4: PDF ingest + normalizer + aggregator + OCR + page_classifier + name_extractor + metadata_extractor + place_extractor
+M5 / Phase 5: PDF ingest + normalizer + aggregator + OCR + page_classifier + name_extractor + metadata_extractor + place_extractor + orchestrator
 ```
 
 Available now:
@@ -53,15 +53,18 @@ Available now:
 - `place_extractor` can download the current page result or the selected person's final rows directly as CSV from the standalone UI.
 - `place_extractor` writes durable JSON artifacts under `data/intermediate/<doc_id>/pNNN.places.json`.
 - `place_extractor` only lists documents and pages that already have OCR text, `should_extract=true`, and non-empty `pNNN.names.json`.
+- `orchestrator` can run a document end to end from a standalone dashboard at `http://127.0.0.1:5110/orchestrate/`.
+- `orchestrator` persists `data/logs/<doc_id>/job.json`, `pipeline.log`, and `events.jsonl`.
+- `orchestrator` server-renders the current job summary, per-page table, and live log on first load, then keeps the page current through SSE with polling fallback and visible connection status.
+- `orchestrator` can pause after the current stage, resume from saved artifacts, clear generated results for a document while keeping the source PDF, and preview/download final CSV outputs directly in the dashboard.
+- `orchestrator` automatically marks stale `running` jobs as `paused` after service restart or lost worker thread so they can be resumed safely.
 
 Not available yet:
 
 - `http://127.0.0.1:5000/`
 - Main Web App
-- Dashboard
-- Orchestration pages
 
-`http://127.0.0.1:5000/` becomes available after M6 / Phase 6, when the `web_app` service is implemented and added to Compose. During the current Phase 4.4 target, port 5000 is expected to fail.
+`http://127.0.0.1:5000/` becomes available after M6 / Phase 6, when the `web_app` service is implemented and added to Compose. During the current Phase 5 target, port 5000 is still expected to fail because the standalone orchestrator dashboard is the current runtime UI.
 
 ## 2. Open the Project
 
@@ -1090,6 +1093,100 @@ curl -X POST "http://127.0.0.1:5107/places/clear-all/sample%20input%201"
 
 ## 19. Future Main Web UI Routes
 
+## 19. Phase 5 Orchestrator Testing
+
+Build and run the standalone orchestration dashboard:
+
+```bash
+docker compose --profile orchestrator up -d --build orchestrator
+```
+
+Open:
+
+```text
+http://127.0.0.1:5110/orchestrate/
+```
+
+The dashboard supports:
+
+- uploading a PDF and starting an end-to-end job
+- selecting an existing `data/input_pdfs/*.pdf` file and running it
+- showing the current job summary, progress bars, per-page status table, and live log tail immediately on page load
+- per-page status cells for ingest, OCR, classify, names, meta + places, and aggregate
+- live updates through `GET /orchestrate/stream/<job_id>` when SSE is available, with automatic fallback polling of `GET /orchestrate/status/<job_id>` when it is not
+- a visible dashboard connection/error message so the operator can tell whether live updates are connected, retrying, or using fallback refresh
+- persistent `data/logs/<doc_id>/job.json`, `pipeline.log`, and `events.jsonl`
+- resume, soft-pause, and soft-cancel controls for the selected job
+- automatic coercion of stale `running` jobs to `paused` after service restart or worker loss
+- a clear-results control that removes generated pages, OCR text, intermediate JSON, outputs, logs, and audit artifacts while keeping the source PDF
+- final output preview and download cards for `Detailed info.csv`, `name place.csv`, and `run_status.csv`
+
+Compose serves the standalone orchestrator with a threaded Gunicorn command:
+
+```bash
+gunicorn -b 0.0.0.0:5110 -w 1 --worker-class gthread --threads 8 --timeout 1800 'orchestrator.standalone:create_app()'
+```
+
+This is important because the long-lived `/orchestrate/stream/<job_id>` request must not starve ordinary dashboard page loads, `/status`, or `/outputs` requests while a document is running.
+
+Run the orchestrator unit tests:
+
+```bash
+docker build -f docker/web.Dockerfile -t manumission-web:phase5 .
+docker run --rm manumission-web:phase5 python -m unittest discover -s /app/orchestrator/tests -p "test_*.py"
+```
+
+Start a registered-PDF run by API:
+
+```bash
+curl -X POST http://127.0.0.1:5110/orchestrate/run \
+  -F "source_pdf=sample input 1.pdf" \
+  -F "doc_id=sample input 1"
+```
+
+Poll the returned `job_id`:
+
+```text
+http://127.0.0.1:5110/orchestrate/status/<job_id>
+```
+
+Open the live event stream:
+
+```text
+http://127.0.0.1:5110/orchestrate/stream/<job_id>
+```
+
+`/orchestrate/stream/<job_id>` is the dashboard's live-update channel, not its only refresh path. The page also polls `/orchestrate/status/<job_id>` as a fallback if SSE is interrupted or unsupported.
+
+Pause the current run after the active stage finishes:
+
+```bash
+curl -X POST http://127.0.0.1:5110/orchestrate/pause/<job_id>
+```
+
+Clear generated results for one document while keeping the input PDF:
+
+```bash
+curl -X POST "http://127.0.0.1:5110/orchestrate/clear-results/sample%20input%201"
+```
+
+Expected runtime artifacts:
+
+```text
+data/logs/<doc_id>/
+  job.json
+  pipeline.log
+  events.jsonl
+```
+
+Quick troubleshooting:
+
+- If the dashboard looks stuck but `job.json` or `pipeline.log` keeps changing, the page is likely retrying SSE or waiting for the next polling refresh.
+- If the live log tail is quiet, check the client-status message in the dashboard and confirm `/orchestrate/status/<job_id>` still advances.
+- If a previously running job now shows `paused` after a restart, that is expected stale-job recovery behavior; use `Resume` to continue from saved artifacts.
+
+## 20. Future Main Web UI Routes
+
 After M6 / Phase 6, the main Web App should expose these local routes:
 
 | Module | URL | Purpose |
@@ -1109,7 +1206,7 @@ After M6 / Phase 6, the main Web App should expose these local routes:
 
 These routes are future targets, not current Phase 4.4 behavior.
 
-## 20. Running Tests
+## 21. Running Tests
 
 Shared-library tests:
 
