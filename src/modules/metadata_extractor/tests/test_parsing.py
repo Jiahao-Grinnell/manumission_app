@@ -50,6 +50,31 @@ class ParsingTests(unittest.TestCase):
         self.assertEqual(parsed["validation"]["whether_abuse"]["status"], "cleared_missing_evidence")
         self.assertEqual(parsed["validation"]["trial"]["status"], "cleared_missing_evidence")
 
+    def test_parse_meta_inherits_report_type_even_when_model_disagrees(self) -> None:
+        parsed = parse_meta(
+            {"report_type": "statement", "evidence": {}},
+            "Abdulla",
+            9,
+            "correspondence",
+            classify_evidence="I have the honour to forward copies",
+        )
+        self.assertEqual(parsed["row"]["Report Type"], "correspondence")
+        self.assertEqual(parsed["validation"]["report_type"]["status"], "inherited")
+
+    def test_parse_meta_clears_income_amounts(self) -> None:
+        parsed = parse_meta(
+            {
+                "report_type": "statement",
+                "amount_paid": "Rs.13/-",
+                "evidence": {"amount_paid": "I received my income of Rs.13/-"},
+            },
+            "Bashir bin Farajullah",
+            17,
+            "statement",
+        )
+        self.assertEqual(parsed["row"]["Amount paid"], "")
+        self.assertEqual(parsed["validation"]["amount_paid"]["status"], "cleared_non_case_amount")
+
     def test_parse_meta_handles_non_dict_payload(self) -> None:
         parsed = parse_meta(["bad"], "Ahmad bin Said", 5, "correspondence")
         self.assertEqual(parsed["row"]["Report Type"], "correspondence")

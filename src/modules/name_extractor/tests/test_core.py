@@ -35,7 +35,7 @@ class CoreTests(unittest.TestCase):
     def test_extract_names_records_model_stage_removals(self) -> None:
         client = FakeClient(
             [
-                {"named_people": [{"name": "Mariam bint Yusuf", "evidence": "Statement of slave Mariam bint Yusuf"}, {"name": "Sheikh Rashid", "evidence": "sold to one Sheikh Rashid"}]},
+                {"named_people": [{"name": "Mariam bint Yusuf", "evidence": "Statement of slave Mariam bint Yusuf"}, {"name": "Rashid bin Hamad", "evidence": "sold to one Rashid bin Hamad"}]},
                 {"named_people": [{"name": "Mariam bint Yusuf", "evidence": "Statement of slave Mariam bint Yusuf"}]},
                 {"named_people": [{"name": "Ahmad bin Said", "evidence": "Ahmad bin Said requests repatriation"}]},
                 {"named_people": [{"name": "Ahmad bin Said", "evidence": "Ahmad bin Said requests repatriation"}]},
@@ -44,22 +44,30 @@ class CoreTests(unittest.TestCase):
         )
         result = extract_names(_fixture("single_subject.txt"), report_type="statement", client=client)
         self.assertEqual([item["name"] for item in result.named_people], ["Ahmad bin Said", "Mariam bint Yusuf"])
-        self.assertTrue(any(item["name"] == "Sheikh Rashid" and item["stage"] == "pass1_filter" for item in result.removed_candidates))
+        self.assertTrue(any(item["name"] == "Rashid bin Hamad" and item["stage"] == "pass1_filter" for item in result.removed_candidates))
         self.assertEqual(result.model_calls, 5)
 
     def test_rule_filter_removes_owner_when_verify_keeps_it(self) -> None:
         client = FakeClient(
             [
-                {"named_people": [{"name": "Mariam bint Yusuf", "evidence": "Statement of slave Mariam bint Yusuf"}, {"name": "Sheikh Rashid", "evidence": "sold to one Sheikh Rashid"}]},
-                {"named_people": [{"name": "Mariam bint Yusuf", "evidence": "Statement of slave Mariam bint Yusuf"}, {"name": "Sheikh Rashid", "evidence": "sold to one Sheikh Rashid"}]},
+                {"named_people": [{"name": "Mariam bint Yusuf", "evidence": "Statement of slave Mariam bint Yusuf"}, {"name": "Rashid bin Hamad", "evidence": "sold to one Rashid bin Hamad"}]},
+                {"named_people": [{"name": "Mariam bint Yusuf", "evidence": "Statement of slave Mariam bint Yusuf"}, {"name": "Rashid bin Hamad", "evidence": "sold to one Rashid bin Hamad"}]},
                 {"named_people": []},
                 {"named_people": []},
-                {"named_people": [{"name": "Mariam bint Yusuf", "evidence": "Statement of slave Mariam bint Yusuf"}, {"name": "Sheikh Rashid", "evidence": "sold to one Sheikh Rashid"}]},
+                {"named_people": [{"name": "Mariam bint Yusuf", "evidence": "Statement of slave Mariam bint Yusuf"}, {"name": "Rashid bin Hamad", "evidence": "sold to one Rashid bin Hamad"}]},
             ]
         )
         result = extract_names(_fixture("owner_vs_slave.txt"), report_type="statement", client=client)
         self.assertEqual([item["name"] for item in result.named_people], ["Mariam bint Yusuf"])
-        self.assertTrue(any(item["name"] == "Sheikh Rashid" and item["stage"] == "rule_filter" for item in result.removed_candidates))
+        self.assertTrue(any(item["name"] == "Rashid bin Hamad" and item["stage"] == "rule_filter" for item in result.removed_candidates))
+
+    def test_rule_seed_candidates_are_included_in_final_rule_stage(self) -> None:
+        client = FakeClient([{"named_people": []}, {"named_people": []}, {"named_people": []}, {"named_people": []}, {"named_people": []}])
+        result = extract_names(_fixture("sample2_p010_subject_list.txt"), report_type="correspondence", client=client)
+        self.assertEqual(
+            {item["name"] for item in result.named_people},
+            {"Surur", "Aman bin Faragh", "Zuwaid bin Mabrook", "Daaji bin Khamis"},
+        )
 
     def test_rerun_verify_reuses_existing_upstream_stages(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

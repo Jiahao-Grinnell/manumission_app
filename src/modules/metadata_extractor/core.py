@@ -44,6 +44,11 @@ SUBJECT NAME: {name}
 PAGE: {page}
 UPSTREAM PAGE REPORT TYPE: {report_type}
 
+Rules:
+- Use the upstream page report type as the final report_type.
+- Fill amount_paid only for sale, purchase, debt, redemption, compensation, maintenance, passage, or case-expense amounts.
+- Do not fill amount_paid for income, wages, earnings, diving proceeds, or unrelated personal spending.
+
 OCR TEXT:
 <<<{ocr}>>>"""
 
@@ -461,4 +466,3 @@ def _page_number(path: Path) -> int:
         return int(match.group(1))
     match = re.search(r"(\d+)", path.stem)
     return int(match.group(1)) if match else 0
-

@@ -6,7 +6,7 @@ Implementation status as of 2026-04-23: prompt-backed extraction, merged candida
 
 ## 1. Purpose
 
-Given one OCR page plus one already-identified subject name, produce the final rows used by `name place.csv`.
+Given one OCR page plus one already-identified subject name, produce page-local place rows. Positive `Order` rows are route rows intended for the final `name place.csv`; `Order=0` rows are relevant background or administrative mentions retained in the intermediate JSON and UI for review.
 
 Each final row includes:
 
@@ -25,7 +25,9 @@ Key constraints:
 
 - use only this page and only the target person
 - keep ship names and generic office words out of final places
-- preserve relevant background mentions as `order=0` instead of discarding them
+- preserve relevant background mentions as `order=0` instead of discarding them; aggregation excludes these rows from the final route CSV by default
+- use `Arrival Date` only for the target person's actual arrival, appearance, presence, refuge, or completed movement at that place
+- keep letter dates, record dates, forwarding dates, planned movement dates, and conditional movement dates out of `Arrival Date`; preserve useful wording in `Time Info`
 - if verifier adjudication fails, fall back to candidate rows rather than dropping all place information
 
 ## 2. Inputs and Output
@@ -134,7 +136,7 @@ Stored shape:
 }
 ```
 
-`aggregator` can read either the top-level `rows` array or the per-person `people[].rows` arrays from this file.
+`aggregator` reads the top-level `rows` array when present, falling back to per-person `people[].rows` only for older artifacts. It writes only positive-order route rows to the final `name place.csv`.
 
 ## 3. Core Algorithm
 
@@ -153,6 +155,7 @@ pass1 candidate discovery
 Key post-processing rules:
 
 - `parsing.py` normalizes place text through `08 normalizer`, filters invalid place-like text, coerces route order to integers, and converts date strings to ISO where possible.
+- `parsing.py` also clears unsupported `Arrival Date` values when the evidence is only an administrative date, letter date, future/conditional movement, or other non-arrival timing.
 - `validation.py` checks consecutive positive orders, duplicate places, date-confidence consistency, ascending dated route rows, and generic invalid place text.
 - `reconcile.py` ports the old transport/forwarding heuristics, including `infer_forwarding_transport_rows`, route-promotion rules, and final order reassignment.
 - `core.py` upserts single-person reruns into existing page JSON and preserves previously extracted people on the same page.
@@ -327,6 +330,7 @@ Current coverage:
 
 - candidate parsing filters ship names and generic invalid place text
 - date parsing derives ISO dates from document-year context when needed
+- date parsing clears letter/planned movement dates that are not actual arrival or presence dates
 - verifier validation catches route-shape and date-consistency failures
 - forwarding heuristics recover source/destination rows from administrative wording
 - page extraction handles all names on a page and upserts single-person reruns

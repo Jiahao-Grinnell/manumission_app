@@ -12,7 +12,7 @@ This is an end-to-end extraction system for **historical slavery and manumission
    - each person's **case metadata**, including crime type, abuse, conflict type, trial outcome, and amount paid
    - each person's **place path**, including birthplace, place of capture, arrival place, transit places, and related dates
 4. Normalize, deduplicate, and validate the extracted data.
-5. Write final CSV files: `Detailed info.csv`, `name place.csv`, and `run_status.csv`.
+5. Write final CSV files: `Detailed info.csv`, route-only `name place.csv`, and `run_status.csv`.
 
 The original system consisted of two monolithic Python scripts plus Docker Compose. The refactor splits it into a **modular Flask application** where each module can run independently, be tested independently, and expose a visual test UI.
 

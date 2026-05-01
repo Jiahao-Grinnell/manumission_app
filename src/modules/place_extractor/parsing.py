@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from modules.normalizer.dates import to_iso_date
@@ -9,6 +10,26 @@ from shared.text_utils import normalize_ws
 
 
 DATE_CONFIDENCE_VALUES = {"explicit", "derived_from_doc", "unknown", ""}
+ACTUAL_PLACE_DATE_PAT = re.compile(
+    r"\b("
+    r"arriv(?:ed|ing)|reached|appeared\s+before|came\s+to|went\s+to|"
+    r"brought\s+(?:me\s+)?to|taken\s+to|sent\s+to|escaped\s+to|"
+    r"took\s+refuge\s+at|remained|stayed"
+    r")\b",
+    flags=re.I,
+)
+ADMIN_DATE_PAT = re.compile(
+    r"\b(copy\s+of\s+a\s+letter|letter\s+no\.?|dated|from\s+the\s+political|"
+    r"to\s+the\s+political|recorded\s+before\s+me|usual\s+ending)\b",
+    flags=re.I,
+)
+PLANNED_OR_UNCERTAIN_DATE_PAT = re.compile(
+    r"\b("
+    r"will|would|shall|should|if|until|when\s+he\s+would|requested?|requests?|"
+    r"desired?|wishes?|intends?|proposes?|passage\s+to|to-day\s+to"
+    r")\b",
+    flags=re.I,
+)
 
 
 def parse_candidate_places(obj: Any, name: str, page: int) -> list[dict[str, Any]]:
@@ -58,6 +79,12 @@ def parse_place_rows(obj: Any, name: str, page: int, doc_year: int | None) -> li
         time_text = _clean_text(item.get("time_text"))
         if raw_date and not arrival_date and raw_date.casefold() not in time_text.casefold():
             time_text = normalize_ws(f"{raw_date}; {time_text}" if time_text else raw_date)
+        evidence = clean_evidence(item.get("evidence"))
+        if arrival_date and not _arrival_date_supported(raw_date, evidence, time_text):
+            if raw_date and raw_date.casefold() not in time_text.casefold():
+                time_text = normalize_ws(f"{time_text}; {raw_date}" if time_text else raw_date)
+            arrival_date = ""
+            date_confidence = ""
         rows.append(
             {
                 "Name": name,
@@ -67,7 +94,7 @@ def parse_place_rows(obj: Any, name: str, page: int, doc_year: int | None) -> li
                 "Arrival Date": arrival_date,
                 "Date Confidence": date_confidence,
                 "Time Info": time_text,
-                "_evidence": clean_evidence(item.get("evidence")),
+                "_evidence": evidence,
             }
         )
     return _strip_internal(dedupe_place_rows(rows, drop_internal=False))
@@ -101,6 +128,19 @@ def _int_value(value: Any) -> int:
         return int(value or 0)
     except Exception:
         return 0
+
+
+def _arrival_date_supported(raw_date: str, evidence: str, time_text: str) -> bool:
+    context = normalize_ws(f"{evidence} {time_text}")
+    if not context:
+        return False
+    if PLANNED_OR_UNCERTAIN_DATE_PAT.search(context):
+        return False
+    if ADMIN_DATE_PAT.search(context) and not ACTUAL_PLACE_DATE_PAT.search(context):
+        return False
+    if raw_date and raw_date in evidence and ADMIN_DATE_PAT.search(evidence) and not ACTUAL_PLACE_DATE_PAT.search(evidence):
+        return False
+    return bool(ACTUAL_PLACE_DATE_PAT.search(context))
 
 
 def _strip_internal(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:

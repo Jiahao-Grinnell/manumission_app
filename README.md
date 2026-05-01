@@ -162,7 +162,7 @@ Then open:
 http://127.0.0.1:5107/places/
 ```
 
-The place extractor reads OCR text from `data/ocr_text/<doc_id>/`, page-classifier results from `data/intermediate/<doc_id>/pNNN.classify.json`, and name results from `data/intermediate/<doc_id>/pNNN.names.json`. It writes `pNNN.places.json`, stores one or more place rows per named person for `name place.csv`, keeps candidate, verified, date-enriched, and reconciled route rows for debugging, exposes direct CSV download buttons for the current page or selected person, and includes a `Clear All Results` action that removes saved `pNNN.places.json` outputs for the selected document after confirmation.
+The place extractor reads OCR text from `data/ocr_text/<doc_id>/`, page-classifier results from `data/intermediate/<doc_id>/pNNN.classify.json`, and name results from `data/intermediate/<doc_id>/pNNN.names.json`. It writes `pNNN.places.json`, stores positive-order route rows for the final `name place.csv`, preserves `order=0` background/admin mentions in intermediate JSON and the UI for review, keeps candidate, verified, date-enriched, and reconciled route rows for debugging, exposes direct CSV download buttons for the current page or selected person, and includes a `Clear All Results` action that removes saved `pNNN.places.json` outputs for the selected document after confirmation.
 
 To run the current orchestration dashboard:
 

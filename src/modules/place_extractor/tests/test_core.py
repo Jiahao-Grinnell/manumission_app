@@ -209,8 +209,8 @@ class CoreTests(unittest.TestCase):
                 [(row["Place"], row["Order"], row["Arrival Date"], row["Date Confidence"]) for row in result.rows],
                 [
                     ("Abyssinia", 1, "", ""),
-                    ("Koweit", 2, "1907-06-10", "explicit"),
-                    ("Bushehr", 3, "1907-06-10", "derived_from_doc"),
+                    ("Koweit", 2, "", ""),
+                    ("Bushehr", 3, "", ""),
                     ("Berbera", 0, "", ""),
                 ],
             )

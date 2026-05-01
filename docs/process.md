@@ -238,6 +238,7 @@ The simplest LLM module: one prompt, one JSON response, one decision.
 
 - `core.py`: `classify(ocr_text) -> PageDecision`.
 - Load prompt from `config/prompts/page_classifier/page_classify.txt`.
+- Keep regex report-type overrides conservative: only explicit named subject statements or clear first-person statement openings force `statement`; generic `statement made by the slave` and correspondence wording such as `I request` stay `correspondence`.
 - UI: text selector, full OCR text, JSON result, classification badge, and highlighted evidence.
 
 Verification: run known statement, correspondence/admin, correspondence, index, and bad-OCR pages and check classification.
@@ -270,7 +271,7 @@ Key implementation decisions:
 - The stored `pNNN.names.json` keeps every stage's input/output plus prompt text, parsed model JSON, fallback notes, dropped candidates, and final keep reasons.
 - `rerun-pass` is decision-complete: it accepts `pass1`, `pass1_filter`, `recall`, `recall_filter`, or `verify`, reruns that stage, and recomputes every downstream stage while reusing intact upstream artifacts.
 - Merge logic is imported from `08 normalizer` instead of being duplicated.
-- The final rule filter explains why a candidate survived or was removed, including negative-role matches and `free born / not a slave` handling.
+- The final rule filter explains why a candidate survived or was removed, including enumerated subject-list matches, generic subject phrase rejection, negative-role matches, narrowed official-title handling, and `free born / not a slave` handling.
 
 UI:
 
@@ -299,7 +300,7 @@ Key implementation decisions:
 - Prompts live under `config/prompts/metadata_extractor/` and are loaded at runtime. `meta_pass.txt` holds the extraction prompt, and `category_guide.txt` holds the final `Detailed info.csv` category explanations for debugging and prompt tuning.
 - Final allowlists come from `config/schemas/vocab.yaml`, loaded through `src/modules/metadata_extractor/vocab.py`. This keeps the final metadata categories aligned with one YAML source of truth.
 - The page artifact is `data/intermediate/<doc_id>/pNNN.meta.json`. It stores page-level context, all extracted people, final `rows`, per-field validation, raw model values, rendered prompt text, parsed response JSON, and evidence snippets.
-- Each extraction is one LLM call per person with strict post-parse validation. Non-empty values without evidence are cleared, invalid enum values are cleared, and `report_type` falls back to page-classifier context when the model produces an invalid final value.
+- Each extraction is one LLM call per person with strict post-parse validation. Non-empty values without evidence are cleared, invalid enum values are cleared, `report_type` always inherits the page-classifier context, and `amount_paid` is cleared unless the amount is tied to sale, purchase, debt, redemption, compensation, maintenance, passage, or case expense.
 - Running `run-single` for one person upserts that person's result into an existing `pNNN.meta.json` instead of dropping previously extracted people on the page.
 - The standalone UI only lists documents/pages that already have OCR text, `should_extract=true`, and at least one named person from `name_extractor`.
 
@@ -330,7 +331,7 @@ Key implementation decisions:
 - Prompts live under `config/prompts/place_extractor/` and are loaded at runtime: `place_pass.txt`, `place_recall.txt`, `place_verify.txt`, and `place_date_enrich.txt`.
 - The stored page artifact is `data/intermediate/<doc_id>/pNNN.places.json`. It keeps page-level context, final `rows`, per-person `rows`, candidate/verified/date-enriched/reconciled stage payloads, validation summaries, and model-call stats.
 - Extraction combines two high-recall discovery calls (`pass1` plus `recall`) into one merged candidate stage, retries verifier adjudication once when route validation fails, then runs a date-enrichment pass and a final Python reconciliation layer.
-- Final reconciliation ports the old transport/forwarding heuristics, promotes confident route mentions, preserves `order=0` background mentions, and normalizes place/date fields through `08 normalizer`.
+- Final reconciliation ports the old transport/forwarding heuristics, promotes confident route mentions, preserves `order=0` background mentions for review, clears administrative/planned dates from `Arrival Date`, and normalizes place/date fields through `08 normalizer`.
 - Running `run-single` for one person upserts that person's route result into an existing `pNNN.places.json` instead of dropping previously extracted people on the page.
 - The standalone UI only lists documents/pages that already have OCR text, `should_extract=true`, and at least one named person from `name_extractor`.
 - The standalone UI also supports direct page/person CSV download plus a `Clear All Results` action that deletes saved `pNNN.places.json` files for the selected document after confirmation.

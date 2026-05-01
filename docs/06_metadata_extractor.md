@@ -25,7 +25,8 @@ Key constraints:
 - every non-empty field needs page-local evidence
 - invalid enum values are cleared
 - values with missing evidence are cleared
-- upstream `report_type` from `page_classifier` is context, but the final row must still land in the final `Detailed info.csv` categories
+- upstream `report_type` from `page_classifier` is the final `Report Type` source of truth; model `report_type` output is advisory and is not allowed to override it
+- `Amount paid` is only for amounts tied to sale, purchase, debt, redemption, compensation, maintenance, passage, or case expenses; ordinary income, wages, earnings, diving proceeds, and unrelated spending are cleared
 
 ## 2. Inputs and Output
 
@@ -151,8 +152,9 @@ Post-parse validation rules in `parsing.py`:
 - `choose_allowed(value, allowed)` does case-insensitive matching against the YAML allowlist.
 - `choose_yes_no_blank(value)` normalizes abuse to `yes`, `no`, or `""`.
 - any non-empty enum or amount without evidence becomes `""`.
-- `amount_paid` keeps literal text only; `"null"` and `"none"` collapse to `""`.
-- invalid model `report_type` values do not survive; the extractor falls back to the page-classifier context instead.
+- `amount_paid` keeps literal text only when the evidence ties the amount to a case payment, sale, purchase, debt, redemption, compensation, maintenance, passage, or expense; `"null"` and `"none"` collapse to `""`.
+- `amount_paid` is cleared when the evidence describes income, wages, earnings, diving proceeds, or an amount that is not part of the case handling.
+- model `report_type` values do not override the page-classifier context, even when valid.
 
 Whole-page behavior in `core.py`:
 
@@ -324,6 +326,8 @@ Current coverage:
 - `choose_allowed` respects YAML allowlists case-insensitively
 - `choose_yes_no_blank` normalizes abuse flags
 - `parse_meta` clears invalid values and missing-evidence values safely
+- `parse_meta` inherits page-classifier `report_type` even when the model disagrees
+- `parse_meta` clears income/wage amounts from `Amount paid`
 - `run_page_file()` extracts all names on a page
 - single-person reruns upsert into an existing `pNNN.meta.json`
 - `run_folder()` skips pages without names

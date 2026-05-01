@@ -68,7 +68,7 @@ def classify(ocr: str, stats: CallStats, *, report_type_override=None) -> PageDe
     return decision
 ```
 
-`override_report_type_from_ocr` is an important fallback. If the text clearly matches patterns such as `"Statement of"`, it forcefully corrects the model's report type to `statement`. Administrative and forwarding signals fall under `correspondence`.
+`override_report_type_from_ocr` is an important but conservative fallback. It corrects the model to `statement` only for strong subject-statement signals, such as `Statement of slave Mariam bint Yusuf`, `statement made by <real name>`, or clear first-person statement openings such as `I was born` / `I was kidnapped`. Generic phrases such as `statement made by the slave` and correspondence phrasing such as `I request` do not force `statement`. Administrative, forwarding, certificate, passage, and transport signals fall under `correspondence`.
 
 Load the prompt from `config/prompts/page_classifier/page_classify.txt`, moved from the original `PAGE_CLASSIFY_PROMPT`.
 
@@ -204,6 +204,7 @@ Unit tests:
 
 - `parse_page_decision` behavior for valid JSON, missing fields, and invalid `report_type`.
 - `override_report_type_from_ocr` with fixtures that match STATEMENT, CORRESPONDENCE, and no pattern.
+- Regression coverage that generic `statement made by the slave` and correspondence `I request` wording do not force `statement`.
 
 Integration tests:
 

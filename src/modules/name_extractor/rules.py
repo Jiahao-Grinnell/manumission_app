@@ -6,7 +6,7 @@ from typing import Any
 from modules.normalizer.names import build_name_regex, normalize_name
 from shared.text_utils import normalize_ws, strip_accents
 
-from .merging import looks_like_candidate_name, merge_name_candidates
+from .merging import is_generic_subject_phrase, looks_like_candidate_name, merge_name_candidates
 
 
 ROLE_NEGATIVE_PATTERNS = [
@@ -24,9 +24,19 @@ ROLE_POSITIVE_PATTERNS = [
     ("statement_of_subject", r"\bstatement\s+of\s+(?:slave\s+)?{name}\b", 'matched "statement of {name}"'),
     ("statement_by_subject", r"\bstatement\s+made\s+by\s+{name}\b", 'matched "statement made by {name}"'),
     ("slave_name", r"\bslave\s+{name}\b", 'matched "slave {name}"'),
+    ("negro_name", r"\bnegro\s+{name}\b", 'matched "negro {name}"'),
+    ("case_of_negro", r"\bcase\s+of\s+(?:the\s+)?(?:negro|slave)\s+{name}\b", 'matched "case of the negro {name}"'),
+    (
+        "manumission_certificate_desired",
+        r"\b{name}\b.{{0,120}}\b(?:desires?|wants?|requests?)\b.{{0,80}}\bmanumission\s+certificate\b",
+        'matched "{name} ... manumission certificate"',
+    ),
     ("named_slave_forward", r"\bslave\b.*?\bnamed\s+{name}\b", 'matched "slave ... named {name}"'),
     ("named_slave_reverse", r"\bnamed\s+{name}\b.*?\bslave\b", 'matched "named {name} ... slave"'),
     ("single_slave_named", r"\b1\s+slave\b.*?\bnamed\s+{name}\b", 'matched "1 slave ... named {name}"'),
+    ("certain_negro_claims", r"\bcertain\s+{name}\s+(?:negro|slave)\b.{{0,100}}\bclaims?\s+to\s+have\s+been\s+(?:a\s+)?slave\b", 'matched "certain {name} negro ... slave"'),
+    ("plural_slave_names", r"\bslaves?\s+whose\s+names?\s+are\b.{{0,260}}\b{name}\b", 'matched "slaves whose names are ... {name}"'),
+    ("following_slave_names", r"\bfollowing\s+(?:refugee\s+)?slaves?\b.{{0,260}}\b{name}\b", 'matched "following slaves ... {name}"'),
     ("refugee_group", r"\brefugee\s+slaves?\b.*?\b{name}\b", 'matched "refugee slaves ... {name}"'),
     ("delivery_to", r"\bfor\s+delivery\s+to\s+{name}\b", 'matched "for delivery to {name}"'),
     ("grant_certificate", r"\bgrant\b.*?\bcertificate\b.*?\bto\s+{name}\b", 'matched "grant ... certificate ... to {name}"'),
@@ -42,6 +52,9 @@ STRONG_LOCAL_PHRASES = [
     "fugitive slave",
     "statement of slave",
     "statement made by",
+    "slaves whose names are",
+    "whose names are",
+    "case of the negro",
     "grant certificate to",
     "recommend certificate for",
     "requests repatriation",
@@ -50,6 +63,17 @@ STRONG_LOCAL_PHRASES = [
 ROLE_TITLE_PATTERN = re.compile(
     r"\b(?:major|captain|shaikh|sheikh|secretary|agent|political\s+agent|resident|clerk|witness|signatory)\b",
     flags=re.I,
+)
+
+TITLE_BEFORE_NAME_TEMPLATE = r"\b(?:major|captain|shaikh|sheikh|secretary|agent|political\s+agent|resident|clerk|witness|signatory)\s+{name}\b"
+PLURAL_SUBJECT_LIST_PAT = re.compile(
+    r"\b(?:\w+\s+)?slaves?\s+whose\s+names?\s+are\s*:?\s*(?P<body>.*?)(?=\n\s*\n|and\s+who\s+belong|these\s+slaves\b|i\s+request\b|$)",
+    flags=re.I | re.S,
+)
+NUMBERED_NAME_PAT = re.compile(r"(?:^|[\r\n])\s*\d+[\).]?\s*([A-Z][A-Za-z' -]*?[A-Za-z])(?=[.;\r\n])")
+CERTAIN_NEGRO_PAT = re.compile(
+    r"\bcertain\s+([A-Z][A-Za-z' -]*?[A-Za-z])\s+(?:negro|slave)\b.{0,100}\bclaims?\s+to\s+have\s+been\s+(?:a\s+)?slave\b",
+    flags=re.I | re.S,
 )
 
 
@@ -117,6 +141,18 @@ def positive_matches(name: str, text: str) -> list[dict[str, str]]:
     return _pattern_hits(ROLE_POSITIVE_PATTERNS, name, text, reason_type="positive_rule")
 
 
+def rule_seed_candidates(ocr: str) -> list[dict[str, str]]:
+    seeds: list[dict[str, str]] = []
+    text = ocr or ""
+    for match in CERTAIN_NEGRO_PAT.finditer(text):
+        seeds.append({"name": match.group(1), "evidence": clean_evidence(match.group(0))})
+    for match in PLURAL_SUBJECT_LIST_PAT.finditer(text):
+        intro = clean_evidence(match.group(0))
+        for name_match in NUMBERED_NAME_PAT.finditer(match.group("body") or ""):
+            seeds.append({"name": name_match.group(1), "evidence": intro})
+    return merge_name_candidates(seeds)
+
+
 def negative_matches(name: str, text: str) -> list[dict[str, str]]:
     if not text:
         return []
@@ -131,8 +167,7 @@ def negative_matches(name: str, text: str) -> list[dict[str, str]]:
                 "excerpt": clean_evidence(text),
             }
         )
-    first_token = _first_name_token(name)
-    if first_token and ROLE_TITLE_PATTERN.search(lower) and re.search(rf"\b{re.escape(first_token)}\b", lower):
+    if compile_name_phrase(TITLE_BEFORE_NAME_TEMPLATE, name).search(text):
         hits.append(
             {
                 "key": "official_title_context",
@@ -151,6 +186,15 @@ def is_freeborn_not_slave_name(name: str, ocr: str) -> bool:
 def explain_candidate_decision(name: str, evidence: str, ocr: str) -> dict[str, Any]:
     cleaned_name = normalize_name(name)
     cleaned_evidence = clean_evidence(evidence)
+    if is_generic_subject_phrase(cleaned_name):
+        return {
+            "keep": False,
+            "reason_type": "generic_subject_phrase",
+            "reason": "Candidate is an unnamed generic subject phrase, not a real personal name.",
+            "excerpt": cleaned_evidence,
+            "positive_matches": [],
+            "negative_matches": [],
+        }
     texts = [text for text in [cleaned_evidence, *iter_name_contexts(cleaned_name, ocr)] if text]
     positive = [hit for text in texts for hit in positive_matches(cleaned_name, text)]
     negative = [hit for text in texts for hit in negative_matches(cleaned_name, text)]

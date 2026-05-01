@@ -19,8 +19,14 @@ CORRESPONDENCE_REPORT_PAT = re.compile(
     flags=re.I | re.S,
 )
 
+SUBJECT_NAME_FRAGMENT = r"(?!(?:the|a|an|this|that|slave|negro|man|woman|boy|girl)\b)[a-z][a-z' -]{1,80}"
+
 STATEMENT_REPORT_PAT = re.compile(
-    r"\b(statement\s+of|statement\s+made\s+by|i\s+was\s+born|i\s+was\s+kidnapped|i\s+request)\b",
+    rf"\b("
+    rf"statement\s+of\s+(?:slave\s+)?{SUBJECT_NAME_FRAGMENT}|"
+    rf"statement\s+made\s+by\s+(?:slave\s+)?{SUBJECT_NAME_FRAGMENT}|"
+    rf"i\s+was\s+born|i\s+was\s+kidnapped"
+    rf")\b",
     flags=re.I,
 )
 

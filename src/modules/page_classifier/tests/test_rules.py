@@ -32,6 +32,14 @@ class RulesTests(unittest.TestCase):
         text = _fixture("correspondence_page.txt")
         self.assertEqual(override_report_type_from_ocr(text, "correspondence"), "correspondence")
 
+    def test_i_request_does_not_force_statement(self) -> None:
+        text = "I have the honour to say that I request that these slaves deserve liberation."
+        self.assertEqual(override_report_type_from_ocr(text, "correspondence"), "correspondence")
+
+    def test_generic_statement_made_by_slave_does_not_force_statement(self) -> None:
+        text = "Send papers to Bahrain to check statement made by the slave there."
+        self.assertEqual(override_report_type_from_ocr(text, "correspondence"), "correspondence")
+
 
 if __name__ == "__main__":
     unittest.main()

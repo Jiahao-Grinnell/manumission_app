@@ -128,6 +128,7 @@ Important details:
 
 - Baseline cost is five LLM calls: `pass1`, `pass1_filter`, `recall`, `recall_filter`, `verify`.
 - `merged` and `rule_filter` are pure Python.
+- Before the final Python rule filter, deterministic seed candidates are added from high-confidence page patterns such as `certain Surur negro who claims...` and numbered lists after `slaves whose names are`.
 - JSON repair retries may add more model calls.
 - The filter prompt is reused twice, once for `pass1_filter` and once for `recall_filter`.
 - If a filter or verify stage returns an empty list, the module transparently falls back to the upstream candidates and records that fallback in the stored stage payload.
@@ -138,11 +139,12 @@ The final rule layer exists so the module can explain late removals instead of o
 
 Implemented checks:
 
-- `ROLE_POSITIVE_PATTERNS`: `statement of {name}`, `slave {name}`, `refugee slaves ... {name}`, `grant certificate ... to {name}`, `{name} requests repatriation`
+- `ROLE_POSITIVE_PATTERNS`: `statement of {name}`, `slave {name}`, `negro {name}`, `case of the negro {name}`, `certain {name} negro ... slave`, `slaves whose names are ... {name}`, `refugee slaves ... {name}`, `grant certificate ... to {name}`, `{name} requests repatriation`
 - `ROLE_NEGATIVE_PATTERNS`: `sold to {name}`, `bought by {name}`, `belonging to {name}`, `statement recorded by {name}`, `letter from {name}`
-- official-title context detection
+- official-title context detection, narrowed to direct title-before-name forms such as `Captain X` rather than any nearby official title in the page window
 - `free born` plus `not a slave`
-- basic name validation using the shared normalizer
+- generic subject phrase rejection for unnamed labels such as `The Slave`, `the negro`, or `this man`
+- basic name validation using the shared normalizer, without bypassing stopword rejection for two-word generic phrases
 
 The merge step imports shared logic from `modules.normalizer.names` so name comparison heuristics stay consistent across modules.
 
@@ -191,6 +193,9 @@ src/modules/name_extractor/
     |   |-- freeborn_page.txt
     |   |-- grouped_list.txt
     |   |-- owner_vs_slave.txt
+    |   |-- sample1_p011_abdulla.txt
+    |   |-- sample2_p010_subject_list.txt
+    |   |-- sample2_p014_generic_slave.txt
     |   `-- single_subject.txt
     |-- test_core.py
     `-- test_rules.py
@@ -287,6 +292,9 @@ Deterministic unit and mocked-integration tests:
 - positive subject rule detection
 - negative-role rule detection
 - `free born / not a slave` removal
+- numbered subject-list recall for `slaves whose names are`
+- generic phrase rejection for `The Slave`
+- regression coverage for `case of the negro Abdulla` not being removed by official-title context
 - model-stage removal tracking
 - rule-stage removal tracking
 - `rerun-pass` reusing upstream stored stages

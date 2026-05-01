@@ -49,20 +49,21 @@ def aggregate(
 
     detail_rows: list[dict[str, Any]] = []
     place_rows: list[dict[str, Any]] = []
-    status_rows: list[dict[str, Any]] = []
+    status_inputs: list[tuple[int, list[dict[str, Any]], list[dict[str, Any]]]] = []
 
     for page in _sorted_pages(input_dir):
         page_detail = _read_page_detail(input_dir, page)
         page_places = _read_page_places(input_dir, page)
         detail_rows.extend(page_detail)
         place_rows.extend(page_places)
-        status_rows.append(_build_status_row(input_dir, page, page_detail, page_places))
+        status_inputs.append((page, page_detail, page_places))
 
     all_names = [str(row.get("Name") or row.get("name") or "") for row in detail_rows + place_rows]
     name_map = build_name_mapping(all_names)
     actions = cleanup_actions(all_names, name_map)
     cleaned_detail_rows = cleanup_detail_rows(detail_rows, name_map)
-    cleaned_place_rows = cleanup_place_rows(place_rows, name_map)
+    cleaned_place_rows = [row for row in cleanup_place_rows(place_rows, name_map) if _is_final_route_row(row)]
+    status_rows = _build_status_rows(input_dir, status_inputs, cleaned_detail_rows, cleaned_place_rows)
 
     detail_path = output_dir / "Detailed info.csv"
     place_path = output_dir / "name place.csv"
@@ -118,7 +119,7 @@ def _read_page_detail(inter_dir: Path, page: int) -> list[dict[str, Any]]:
 def _read_page_places(inter_dir: Path, page: int) -> list[dict[str, Any]]:
     data = _read_json_optional(inter_dir / f"p{page:03d}.places.json")
     rows = _extract_rows(data, keys=("rows", "place_rows", "places"))
-    if isinstance(data, dict):
+    if not rows and isinstance(data, dict):
         for person in data.get("people") or []:
             if not isinstance(person, dict):
                 continue
@@ -135,6 +136,10 @@ def _read_page_places(inter_dir: Path, page: int) -> list[dict[str, Any]]:
     for row in rows:
         row.setdefault("Page", page)
     return rows
+
+
+def _is_final_route_row(row: dict[str, Any]) -> bool:
+    return bool(row.get("Name")) and bool(row.get("Place")) and _int_value(row.get("Order")) > 0
 
 
 def _extract_rows(data: Any, *, keys: tuple[str, ...]) -> list[dict[str, Any]]:
@@ -167,6 +172,31 @@ def _build_status_row(inter_dir: Path, page: int, detail_rows: list[dict[str, An
         "elapsed_seconds": stats.get("elapsed_seconds", ""),
         "note": _status_note(classify, names),
     }
+
+
+def _build_status_rows(
+    inter_dir: Path,
+    status_inputs: list[tuple[int, list[dict[str, Any]], list[dict[str, Any]]]],
+    cleaned_detail_rows: list[dict[str, Any]],
+    cleaned_place_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    detail_counts = _counts_by_page(cleaned_detail_rows)
+    place_counts = _counts_by_page(cleaned_place_rows)
+    rows: list[dict[str, Any]] = []
+    for page, raw_detail_rows, raw_place_rows in status_inputs:
+        row = _build_status_row(inter_dir, page, raw_detail_rows, raw_place_rows)
+        row["detail_rows"] = detail_counts.get(page, 0)
+        row["place_rows"] = place_counts.get(page, 0)
+        rows.append(row)
+    return rows
+
+
+def _counts_by_page(rows: list[dict[str, Any]]) -> dict[int, int]:
+    counts: dict[int, int] = {}
+    for row in rows:
+        page = _int_value(row.get("Page") or row.get("page"))
+        counts[page] = counts.get(page, 0) + 1
+    return counts
 
 
 def _page_status(classify: Any, detail_rows: list[dict[str, Any]], place_rows: list[dict[str, Any]]) -> str:

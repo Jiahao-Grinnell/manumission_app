@@ -9,8 +9,8 @@ Implementation status as of 2026-04-20: core aggregation, cross-page name cleanu
 Traverse `data/intermediate/<doc_id>/p*.meta.json` and `p*.places.json`, then merge them into:
 
 - `Detailed info.csv`: one row per person per page
-- `name place.csv`: one row per person, page, and place
-- `run_status.csv`: one row per page, recording processing status
+- `name place.csv`: one row per person, page, and positive-order route place
+- `run_status.csv`: one row per page, recording processing status and final cleaned row counts
 
 During aggregation, apply **cross-page cleaning**. The same person may be spelled slightly differently on different pages, so names should be merged at aggregation time.
 
@@ -50,28 +50,26 @@ STATUS_COLUMNS = ["page","filename","status","named_people","detail_rows","place
 ```python
 def aggregate(doc_id: str) -> AggregationResult:
     paths = doc_paths(doc_id)
-    detail_rows, place_rows, status_rows = [], [], []
+    detail_rows, place_rows, status_inputs = [], [], []
 
     for page_num in sorted_pages(paths.inter_dir):
         classify = read_json(paths.classify(page_num))
-        status_rows.append(build_status_row(page_num, classify, ...))
 
         if not classify.get("should_extract"):
+            status_inputs.append((page_num, [], []))
             continue
 
         meta = read_json(paths.meta(page_num))
         places = read_json(paths.places(page_num))
+        page_place_rows = places["rows"] or fallback_people_rows(places)
         detail_rows.extend(meta["rows"])
-
-        for person in places["people"]:
-            if person["rows"]:
-                place_rows.extend(person["rows"])
-            else:
-                place_rows.append(blank_place_row(person["name"], page_num))
+        place_rows.extend(page_place_rows)
+        status_inputs.append((page_num, meta["rows"], page_place_rows))
 
     # Cross-page cleaning
     detail_rows = cleanup_detail_rows(detail_rows)
-    place_rows = cleanup_place_rows(place_rows)
+    place_rows = [row for row in cleanup_place_rows(place_rows) if row["Order"] > 0]
+    status_rows = build_status_rows(status_inputs, detail_rows, place_rows)
 
     # Atomic writes
     write_csv_atomic(paths.output_dir / "Detailed info.csv", detail_rows, DETAIL_COLUMNS)
@@ -84,7 +82,10 @@ def aggregate(doc_id: str) -> AggregationResult:
 Cross-page cleaning added during aggregation:
 
 - In one `doc_id`, merge names such as "Mariam bint Yusuf" and "Marium bint Yusuf" with `names_maybe_same_person`.
-- Deduplicate `name place.csv` rows by `(Name, Page)` with `dedupe_place_rows`.
+- Prefer the top-level `pNNN.places.json["rows"]`; fall back to `people[].rows` only for older artifacts that do not have top-level rows.
+- Deduplicate `name place.csv` rows by `(Name, Page, Place)` with `dedupe_place_rows`.
+- Exclude `Order=0` background/admin place rows from the final `name place.csv`. They remain available in `pNNN.places.json` and the place-review UI.
+- Compute `run_status.csv` `detail_rows` and `place_rows` from cleaned final rows, so status counts match the delivered CSVs.
 - Normalize missing values to `""` and do not keep `None`.
 
 ## 4. Directory Structure
@@ -203,8 +204,7 @@ Unit tests, easiest module to test:
 
 - Put three pages of fake JSON in `fixtures/mock_intermediate/`, including a skipped page, a multi-person page, and place conflicts.
 - `test_aggregate_small_doc()` verifies CSV row counts and key fields.
-- `test_cross_page_name_merge()` verifies same-person spelling variants are merged.
-- `test_atomic_write()` verifies an interrupted write does not corrupt the old file, using mocked I/O exceptions.
+- `test_aggregate_excludes_order_zero_places_and_status_uses_final_counts()` verifies background/admin place rows do not enter `name place.csv`, and `run_status.csv` uses cleaned final counts.
 - `test_empty_doc()` verifies an empty `intermediate/` still produces three empty CSV files with headers.
 
 Current test command:
@@ -225,11 +225,13 @@ docker compose --profile aggregator run --rm aggregator python -m modules.aggreg
 - [x] `aggregate()` reads all intermediate JSON files.
 - [x] CSV columns match the original system.
 - [x] Cross-page same-person merging is enabled.
+- [x] Final `name place.csv` excludes `Order=0` background/admin place rows.
+- [x] `run_status.csv` row counts match cleaned final CSV outputs.
 - [x] Atomic writes use tmp + rename.
 - [x] Empty data still produces empty CSV files with headers.
 - [x] UI previews all three CSVs.
 - [x] Statistics cards are present.
 - [x] Zip download works.
-- [x] Unit tests cover small-doc and empty-doc scenarios.
+- [x] Unit tests cover small-doc, final route filtering, status-count, and empty-doc scenarios.
 - [ ] UI filter and pagination.
 - [ ] Broaden tests for mocked interrupted writes.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from shared.text_utils import normalize_ws
@@ -27,6 +28,18 @@ ROW_FIELD_MAP = {
 
 DETAIL_FIELD_ORDER = ["report_type", "crime_type", "whether_abuse", "conflict_type", "trial", "amount_paid"]
 EVIDENCE_FIELDS = ["crime_type", "whether_abuse", "conflict_type", "trial", "amount_paid"]
+PAYMENT_AMOUNT_CONTEXT_PAT = re.compile(
+    r"\b("
+    r"paid|payment|pay|sum|amount|price|purchase|purchased|sale|sold|debt|"
+    r"redeem|redemption|ransom|compensation|expenses?|maintenance|subsistence|"
+    r"passage|allowance|cost|costs|fee|fees"
+    r")\b",
+    flags=re.I,
+)
+NON_CASE_AMOUNT_CONTEXT_PAT = re.compile(
+    r"\b(income|wages?|salary|earnings?|earned|diving\s+income)\b",
+    flags=re.I,
+)
 
 
 def clean_evidence(value: Any, *, word_limit: int = 25) -> str:
@@ -82,28 +95,17 @@ def parse_meta(
     evidence_source = evidence_obj if isinstance(evidence_obj, dict) else {}
 
     raw_values["report_type"] = normalize_ws(str(obj.get("report_type") or ""))
-    model_report_type = choose_allowed(obj.get("report_type"), DETAIL_REPORT_TYPES)
     upstream_report_type = choose_allowed(report_type, DETAIL_REPORT_TYPES) or DETAIL_REPORT_TYPES[0]
-    if model_report_type:
-        row["Report Type"] = model_report_type
-        validation["report_type"] = _validation(
-            "ok",
-            "Report Type is in the allowed set.",
-            input_value=raw_values["report_type"],
-            final_value=model_report_type,
-            evidence=evidence_map["report_type"],
-        )
-    elif raw_values["report_type"]:
-        row["Report Type"] = upstream_report_type
+    row["Report Type"] = upstream_report_type
+    if raw_values["report_type"]:
         validation["report_type"] = _validation(
             "inherited",
-            f'Cleared invalid Report Type value "{raw_values["report_type"]}" and reused page-classifier context.',
+            "Used page-classifier report type context; model report_type is treated as advisory only.",
             input_value=raw_values["report_type"],
             final_value=upstream_report_type,
             evidence=evidence_map["report_type"],
         )
     else:
-        row["Report Type"] = upstream_report_type
         validation["report_type"] = _validation(
             "inherited",
             "Used page-classifier report type context.",
@@ -197,6 +199,31 @@ def _validate_amount(raw_value: Any, raw_evidence: Any) -> tuple[str, str, dict[
         raw_text = ""
     evidence = clean_evidence(raw_evidence)
     if raw_text and evidence:
+        amount_context = f"{raw_text} {evidence}"
+        if NON_CASE_AMOUNT_CONTEXT_PAT.search(amount_context):
+            return (
+                "",
+                "",
+                _validation(
+                    "cleared_non_case_amount",
+                    "Cleared Amount paid because the evidence describes income, wages, or earnings rather than a case payment.",
+                    input_value=raw_text,
+                    evidence=evidence,
+                ),
+                raw_text,
+            )
+        if not PAYMENT_AMOUNT_CONTEXT_PAT.search(amount_context):
+            return (
+                "",
+                "",
+                _validation(
+                    "cleared_ambiguous_amount",
+                    "Cleared Amount paid because the amount is not tied to a payment, debt, sale, maintenance, passage, or case expense.",
+                    input_value=raw_text,
+                    evidence=evidence,
+                ),
+                raw_text,
+            )
         return raw_text, evidence, _validation("ok", "Amount paid kept as literal page text.", input_value=raw_text, final_value=raw_text, evidence=evidence), raw_text
     if raw_text and not evidence:
         return "", "", _validation("cleared_missing_evidence", "Cleared Amount paid because no supporting evidence was provided.", input_value=raw_text), raw_text
@@ -222,4 +249,3 @@ def _validation(
         "final_value": final_value,
         "evidence": evidence,
     }
-

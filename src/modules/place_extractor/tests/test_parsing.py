@@ -72,6 +72,34 @@ class ParsingTests(unittest.TestCase):
         )
         self.assertEqual(rows, [])
 
+    def test_parse_place_rows_clears_admin_and_planned_dates(self) -> None:
+        rows = parse_place_rows(
+            {
+                "places": [
+                    {
+                        "place": "Koweit",
+                        "order": 2,
+                        "arrival_date": "1907-06-10",
+                        "date_confidence": "explicit",
+                        "time_text": "until the Autumn, when he would sail",
+                        "evidence": "Copy of a letter No. 282, dated the 10th June 1907, from the Political Agent, Koweit.",
+                    },
+                    {
+                        "place": "Bushehr",
+                        "order": 3,
+                        "arrival_date": "1907-06-10",
+                        "date_confidence": "derived_from_doc",
+                        "time_text": "to-day",
+                        "evidence": "Abdulla will be conveyed to-day to H.M.S. Lapwing for passage to Bushire.",
+                    },
+                ]
+            },
+            "Abdulla, son of",
+            10,
+            1907,
+        )
+        self.assertEqual([(row["Place"], row["Arrival Date"], row["Date Confidence"]) for row in rows], [("Koweit", "", ""), ("Bushehr", "", "")])
+
 
 if __name__ == "__main__":
     unittest.main()

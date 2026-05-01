@@ -43,9 +43,11 @@ Order rules:
 - positive orders must form one consecutive sequence 1..n
 
 Date and time rules:
-- use arrival_date only when the date is explicitly stated for that place-event, or when it is clearly derivable from the page date for that handling/presence/delivery/recommendation/statement event
+- use arrival_date only when the date is explicitly stated for the target person's actual arrival, appearance, presence, refuge, or completed movement at that place, or when it is clearly derivable from the page date for that actual place-event
 - use date_confidence = explicit only for directly stated dates
-- use date_confidence = derived_from_doc only when the page date clearly dates that place-event
+- use date_confidence = derived_from_doc only when the page date clearly dates that actual place-event
+- do not use letter dates, forwarding dates, record dates, or administrative handling dates as arrival_date
+- do not use dates for planned, requested, conditional, or future movement as arrival_date
 - if the page gives only partial or vague timing, leave arrival_date null and preserve that wording in time_text
 - do not invent full dates
 

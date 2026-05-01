@@ -25,9 +25,11 @@ Return JSON only:
 
 Rules:
 - keep the same place list; do not add new places here
-- try your best to find a date for each place using ONLY this page
-- use explicit only when the date is directly stated for that place or event
-- use derived_from_doc when the page date clearly dates that handling/presence/delivery/recommendation/statement event for that place
+- try your best to find a date for each place using ONLY this page, but keep arrival_date null unless the date belongs to the target person's actual arrival, appearance, presence, refuge, or completed movement at that place
+- use explicit only when the date is directly stated for that actual place-event
+- use derived_from_doc only when the page date clearly dates the target person's actual place-event
+- do not use letter dates, forwarding dates, record dates, or administrative handling dates as arrival_date
+- do not use dates for planned, requested, conditional, or future movement as arrival_date; preserve that wording in time_text instead
 - if the page only gives partial timing such as month-year or vague relative time, leave arrival_date null and put that timing in time_text
 - do not invent full dates
 - keep evidence short, max 25 words

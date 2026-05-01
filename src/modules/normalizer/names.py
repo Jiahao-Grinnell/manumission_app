@@ -18,7 +18,7 @@ def normalize_name(name: str) -> str:
         return ""
     s = strip_accents(normalize_ws(str(name)))
     s = s.strip(" ,.;:[]{}\"'")
-    s = re.sub(r"^(?:the\s+)?slave\s+", "", s, flags=re.I)
+    s = re.sub(r"^(?:the\s+)?(?:slave|negro)\s+", "", s, flags=re.I)
     s = re.sub(r"^(?:mr|mrs|miss|mst)\.?\s+", "", s, flags=re.I)
     s = re.sub(r"\s*\([^)]*\)\s*", " ", s)
     s = normalize_ws(s)

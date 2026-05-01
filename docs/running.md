@@ -48,7 +48,7 @@ Available now:
 - `metadata_extractor` has a CLI and a standalone local UI at `http://127.0.0.1:5106/meta/`.
 - `metadata_extractor` writes durable JSON artifacts under `data/intermediate/<doc_id>/pNNN.meta.json`.
 - `metadata_extractor` only lists documents and pages that already have OCR text, `should_extract=true`, and non-empty `pNNN.names.json`.
-- `place_extractor` can extract per-person place paths, preserve background mentions with `order=0`, and write one or more rows for `name place.csv`.
+- `place_extractor` can extract per-person place paths, preserve background mentions with `order=0` in intermediate JSON/UI, and provide positive-order route rows for `name place.csv`.
 - `place_extractor` has a CLI and a standalone local UI at `http://127.0.0.1:5107/places/`.
 - `place_extractor` can download the current page result or the selected person's final rows directly as CSV from the standalone UI.
 - `place_extractor` writes durable JSON artifacts under `data/intermediate/<doc_id>/pNNN.places.json`.
@@ -1071,7 +1071,7 @@ data/intermediate/sample input 1/
 The UI should show:
 
 - ordered route cards for positive-order steps
-- background mentions separated as `order=0`
+- background mentions separated as `order=0`; these remain review data and are excluded from the final aggregated `name place.csv`
 - OCR text with place evidence highlighted using explicit / derived / unknown colors
 - stage tabs for candidates, verified, date-enriched, and reconciled rows
 - final validation messages for route shape and date consistency

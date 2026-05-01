@@ -68,12 +68,12 @@ Definitions:
 
 Rules:
 - Use only evidence from this page.
-- Use `report_type` only as final `Detailed info.csv` output category: `statement` or `correspondence`.
-- Treat the upstream page-level report type `{report_type}` as context, not as a required final output value.
+- Use upstream page-level report type `{report_type}` as the final `report_type`; do not override it unless the page-classifier artifact is missing or invalid.
 - For every non-empty field, provide a short evidence quote of at most 25 words.
 - If the page does not support a field directly, leave it empty (`null` or `""` as shown above).
 - Do not infer a crime, conflict, or trial category without direct supporting text.
-- `amount_paid` should be the literal amount text only when a payment or sum is explicitly mentioned.
+- `amount_paid` should be the literal amount text only when the amount is tied to the subject's sale, purchase, debt, redemption, compensation, maintenance, passage, or case expense.
+- Do not fill `amount_paid` for ordinary income, wages, earnings, diving proceeds, or money used for unrelated personal spending.
 - Output JSON only.
 
 SUBJECT NAME: {name}

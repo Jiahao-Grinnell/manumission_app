@@ -18,7 +18,7 @@ from shared.text_utils import clean_ocr
 
 from .merging import merge_name_candidates, names_maybe_same_person
 from .passes import run_filter, run_pass1, run_recall, run_verify
-from .rules import apply_rule_filter, clean_evidence
+from .rules import apply_rule_filter, clean_evidence, rule_seed_candidates
 
 
 ProgressCallback = Callable[[str, int, int, Path], None]
@@ -356,11 +356,12 @@ def _build_merged_stage(pass1_filtered: list[dict[str, str]], recall_filtered: l
 
 
 def _build_rule_stage(candidates: list[dict[str, str]], ocr: str) -> tuple[dict[str, Any], list[dict[str, str]], list[dict[str, Any]]]:
-    final_people, removed, kept_reasons = apply_rule_filter(candidates, ocr)
+    input_candidates = merge_name_candidates(candidates, rule_seed_candidates(ocr))
+    final_people, removed, kept_reasons = apply_rule_filter(input_candidates, ocr)
     stage = {
         "stage": "rule_filter",
         "label": STAGE_LABELS["rule_filter"],
-        "input_candidates": [dict(item) for item in candidates],
+        "input_candidates": [dict(item) for item in input_candidates],
         "llm_candidates": [],
         "candidates": final_people,
         "prompt_name": "",

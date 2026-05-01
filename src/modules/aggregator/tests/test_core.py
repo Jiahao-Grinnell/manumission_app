@@ -59,6 +59,43 @@ class AggregatorCoreTests(unittest.TestCase):
                 self.assertTrue((out / filename).exists())
                 self.assertGreater((out / filename).read_text(encoding="utf-8").count("\n"), 0)
 
+    def test_aggregate_excludes_order_zero_places_and_status_uses_final_counts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            inter = root / "intermediate" / "demo"
+            out = root / "output" / "demo"
+            _write_json(inter / "p001.classify.json", {"should_extract": True, "report_type": "correspondence"})
+            _write_json(inter / "p001.names.json", {"named_people": [{"name": "Abdulla"}]})
+            _write_json(
+                inter / "p001.meta.json",
+                {"rows": [{"Name": "Abdulla", "Page": 1, "Report Type": "correspondence"}]},
+            )
+            _write_json(
+                inter / "p001.places.json",
+                {
+                    "rows": [
+                        {"Name": "Abdulla", "Page": 1, "Place": "Bushehr", "Order": 0},
+                        {"Name": "Abdulla", "Page": 1, "Place": "Abyssinia", "Order": 1},
+                    ],
+                    "people": [
+                        {
+                            "name": "Abdulla",
+                            "rows": [
+                                {"Name": "Abdulla", "Page": 1, "Place": "Bushehr", "Order": 0},
+                                {"Name": "Abdulla", "Page": 1, "Place": "Abyssinia", "Order": 1},
+                            ],
+                        }
+                    ],
+                },
+            )
+
+            aggregate("demo", inter_dir=inter, out_dir=out)
+
+            place_rows = _read_csv(out / "name place.csv")
+            status_rows = _read_csv(out / "run_status.csv")
+            self.assertEqual([(row["Place"], row["Order"]) for row in place_rows], [("Abyssinia", "1")])
+            self.assertEqual(status_rows[0]["place_rows"], "1")
+
 
 def _read_csv(path: Path) -> list[dict[str, str]]:
     with path.open(encoding="utf-8", newline="") as fh:
