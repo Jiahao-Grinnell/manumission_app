@@ -58,6 +58,14 @@ class ReconcileTests(unittest.TestCase):
             ],
         )
 
+    def test_reconcile_demotes_admin_recipient_rows(self) -> None:
+        ocr = "Mubarak requests a certificate. Two copies are forwarded to: The Political Agent, Muost."
+        rows = [
+            {"Name": "Mubarak", "Page": 279, "Place": "Muost", "Order": 1, "Arrival Date": "", "Date Confidence": "", "Time Info": "", "_evidence": "The Political Agent, Muost."},
+        ]
+        reconciled = reconcile_place_rows(rows, ocr, "Mubarak", 279, 1939)
+        self.assertEqual([(row["Place"], row["Order"]) for row in reconciled], [("Muost", 0)])
+
 
 if __name__ == "__main__":
     unittest.main()

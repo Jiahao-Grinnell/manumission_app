@@ -16,12 +16,12 @@ from shared.storage import artifact_ok, write_json_atomic
 from shared.text_utils import clean_ocr, render_prompt
 
 from .parsing import choose_report_type, parse_page_decision
-from .rules import collect_rule_hints, explain_override
+from .rules import collect_rule_hints, explain_override, explain_skip_override
 
 
 DEFAULT_PAGE_CLASSIFY_PROMPT = """You are reading ONE OCR page from a historical slavery / manumission archive.
 
-Your task is to decide whether this page should be extracted, and if so infer the page-level report type.
+Your task is to decide whether this page contains any visible personal name, and if so infer the page-level report type.
 
 Return JSON only:
 {
@@ -54,15 +54,14 @@ Decision hints:
 - Choose statement for "Statement of...", "I was born...", "I was kidnapped...", "I request...", recorded testimony, or declarations.
 - Choose correspondence for official letters, telegrams, memoranda, recommendations, forwarding notes, investigative discussion, repatriation requests/arrangements, passage, delivery to a place, maintenance, or certificate handling.
 
-Skip only when the page is clearly one of these:
-- index or list page
-- archive metadata / cover / about-this-record page
-- OCR too damaged to extract reliably
+Skip only when the page has no visible personal names.
 
 Important:
 - Use ONLY this page.
-- Do not decide skip_reason merely because the page is short or administrative.
-- Administrative cover letters that still name manumission subjects should still be extracted.
+- Do not decide skip_reason because the page is short, administrative, legal, policy-like, an index, or metadata.
+- If the page contains any personal name, including an official, buyer, owner, seller, witness, signatory, or non-subject person, set should_extract=true.
+- Later modules decide which names, if any, are enslaved/manumission subjects.
+- If there is no visible personal name, set should_extract=false. Use bad_ocr only when the no-name page is unreadable; otherwise use record_metadata.
 - evidence must be a short quote or phrase from the page, max 25 words.
 - Output JSON only.
 
@@ -146,6 +145,7 @@ def classify(
             "applied_by": "forced_report_type",
             "rules": collect_rule_hints(prepared_text),
         }
+        skip_override = explain_skip_override(prepared_text)
     else:
         selected_client = client or OllamaClient()
         obj = selected_client.generate_json(
@@ -157,12 +157,18 @@ def classify(
         raw_decision = obj if isinstance(obj, dict) else {"raw": obj}
         parsed = parse_page_decision(obj)
         override = explain_override(prepared_text, parsed.report_type)
+        skip_override = explain_skip_override(prepared_text)
 
+    final_should_extract = not skip_override["should_skip"]
+    final_skip_reason = None if final_should_extract else skip_override["skip_reason"]
+    final_evidence = parsed.evidence
+    if not final_should_extract:
+        final_evidence = skip_override["evidence"] or final_evidence
     final_decision = PageDecision(
-        should_extract=parsed.should_extract,
-        skip_reason=parsed.skip_reason,
+        should_extract=final_should_extract,
+        skip_reason=final_skip_reason,
         report_type=override["to"],
-        evidence=parsed.evidence,
+        evidence=final_evidence,
     )
     elapsed = round(time.time() - started, 2)
     page = _page_number_from_text(prepared_text)
@@ -182,8 +188,8 @@ def classify(
             "report_type": parsed.report_type,
             "evidence": parsed.evidence,
         },
-        override=override,
-        rule_hints=override["rules"],
+        override={**override, "skip_override": skip_override},
+        rule_hints=skip_override["rules"],
     )
 
 

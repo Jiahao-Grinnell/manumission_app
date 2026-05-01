@@ -22,6 +22,11 @@ ARRIVAL_DESTINATION_PAT = re.compile(
     flags=re.I,
 )
 INFERRED_PLACE_PROSE_MARKERS = {"without", "pressure", "slightest", "either", "would", "find", "way"}
+ADMIN_RECIPIENT_ROW_PAT = re.compile(
+    r"(^\s*(?:the\s+political\s+agent|his\s+majesty's\s+consul|british\s+vice-consul|british\s+consular\s+agent)\b|"
+    r"\b(?:two\s+copies|undermentioned\s+paper|wide\s+publicity|proclamation)\b)",
+    flags=re.I,
+)
 
 
 def first_text_position(snippet: str, ocr: str) -> int:
@@ -123,6 +128,7 @@ def reconcile_place_rows(rows: list[dict[str, Any]], ocr: str, name: str, page: 
     work = dedupe_place_rows(work, drop_internal=False)
     if not work:
         return []
+    _demote_admin_recipient_rows(work)
 
     _annotate_positions(work, ocr)
     for row in work:
@@ -162,6 +168,7 @@ def reconcile_place_rows(rows: list[dict[str, Any]], ocr: str, name: str, page: 
 
 def _preserve_existing_route(rows: list[dict[str, Any]], ocr: str) -> list[dict[str, Any]]:
     work = [dict(row) for row in rows]
+    _demote_admin_recipient_rows(work)
     _annotate_positions(work, ocr)
     route_rows = [row for row in work if _int_value(row.get("Order")) > 0]
     zero_rows = [row for row in work if _int_value(row.get("Order")) <= 0]
@@ -170,6 +177,12 @@ def _preserve_existing_route(rows: list[dict[str, Any]], ocr: str) -> list[dict[
     for row in zero_rows:
         row["Order"] = 0
     return _strip_route_internal(route_rows + zero_rows)
+
+
+def _demote_admin_recipient_rows(rows: list[dict[str, Any]]) -> None:
+    for row in rows:
+        if ADMIN_RECIPIENT_ROW_PAT.search(_row_context(row)):
+            row["Order"] = 0
 
 
 def _annotate_positions(rows: list[dict[str, Any]], ocr: str) -> None:

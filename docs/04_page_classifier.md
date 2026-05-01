@@ -1,6 +1,6 @@
 # Module 04 - page_classifier
 
-> Decides whether a page should be extracted and, if so, what report type it is. This is the simplest LLM module in the pipeline, but it determines the downstream processing path.
+> Decides whether a page has any visible personal names and, if so, what report type it is. This is the simplest LLM module in the pipeline, but it determines the downstream processing path.
 
 Status: implemented on 2026-04-21 as a prompt-backed classifier with CLI, Flask blueprint, standalone UI, regex override inspection, and fixture-based unit tests.
 
@@ -13,7 +13,7 @@ Given one page of OCR text, make a single LLM call and output:
 - `report_type: "statement" | "correspondence"`
 - `evidence: str`: a quote of no more than 25 words
 
-This is the gatekeeper for all downstream modules. A wrong extract/skip decision either misses data or wastes work.
+This is the gatekeeper for all downstream modules. It intentionally does not decide which names are enslaved/manumission subjects; later modules make that call.
 
 ## 2. Input / Output
 
@@ -70,6 +70,8 @@ def classify(ocr: str, stats: CallStats, *, report_type_override=None) -> PageDe
 
 `override_report_type_from_ocr` is an important but conservative fallback. It corrects the model to `statement` only for strong subject-statement signals, such as `Statement of slave Mariam bint Yusuf`, `statement made by <real name>`, or clear first-person statement openings such as `I was born` / `I was kidnapped`. Generic phrases such as `statement made by the slave` and correspondence phrasing such as `I request` do not force `statement`. Administrative, forwarding, certificate, passage, and transport signals fall under `correspondence`.
 
+`explain_skip_override` is a second rule layer for hard skips. It follows one rule: pages with any visible personal name stay extractable, even if the name is an official, buyer, owner, seller, witness, or signatory. Pages with no visible personal names are skipped, using `bad_ocr` only when the no-name page is unreadable and otherwise `record_metadata`. Subject-role decisions belong to `name_extractor`, not `page_classifier`.
+
 Load the prompt from `config/prompts/page_classifier/page_classify.txt`, moved from the original `PAGE_CLASSIFY_PROMPT`.
 
 ## 4. Directory Structure
@@ -96,7 +98,9 @@ src/modules/page_classifier/
         |-- statement_page.txt
         |-- transport_page.txt
         |-- index_page.txt
-        `-- bad_ocr_page.txt
+        |-- bad_ocr_page.txt
+        |-- admin_forwarding_p234.txt
+        `-- admin_forwarding_p279.txt
 ```
 
 ## 5. Blueprint API

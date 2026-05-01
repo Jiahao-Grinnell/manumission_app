@@ -96,6 +96,52 @@ class AggregatorCoreTests(unittest.TestCase):
             self.assertEqual([(row["Place"], row["Order"]) for row in place_rows], [("Abyssinia", "1")])
             self.assertEqual(status_rows[0]["place_rows"], "1")
 
+    def test_aggregate_prefers_per_person_place_rows_over_page_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            inter = root / "intermediate" / "demo"
+            out = root / "output" / "demo"
+            _write_json(inter / "p279.classify.json", {"should_extract": True, "report_type": "correspondence"})
+            _write_json(inter / "p279.names.json", {"named_people": [{"name": "Mubarak"}, {"name": "Sulaiman"}]})
+            _write_json(inter / "p279.meta.json", {"rows": []})
+            _write_json(
+                inter / "p279.places.json",
+                {
+                    "rows": [
+                        {"Name": "Mubarak", "Page": 279, "Place": "Muost", "Order": 1},
+                        {"Name": "Sulaiman", "Page": 279, "Place": "Muost", "Order": 2},
+                        {"Name": "Mubarak", "Page": 279, "Place": "Haddin", "Order": 3},
+                        {"Name": "Sulaiman", "Page": 279, "Place": "Haddin", "Order": 4},
+                    ],
+                    "people": [
+                        {
+                            "name": "Mubarak",
+                            "rows": [
+                                {"Name": "Mubarak", "Page": 279, "Place": "Muost", "Order": 1},
+                                {"Name": "Mubarak", "Page": 279, "Place": "Haddin", "Order": 2},
+                            ],
+                        },
+                        {
+                            "name": "Sulaiman",
+                            "rows": [
+                                {"Name": "Sulaiman", "Page": 279, "Place": "Muost", "Order": 1},
+                                {"Name": "Sulaiman", "Page": 279, "Place": "Haddin", "Order": 2},
+                            ],
+                        },
+                    ],
+                },
+            )
+
+            aggregate("demo", inter_dir=inter, out_dir=out)
+
+            place_rows = _read_csv(out / "name place.csv")
+            by_name = {
+                name: [(row["Place"], row["Order"]) for row in place_rows if row["Name"] == name]
+                for name in ("Mubarak", "Sulaiman")
+            }
+            self.assertEqual(by_name["Mubarak"], [("Muost", "1"), ("Haddin", "2")])
+            self.assertEqual(by_name["Sulaiman"], [("Muost", "1"), ("Haddin", "2")])
+
 
 def _read_csv(path: Path) -> list[dict[str, str]]:
     with path.open(encoding="utf-8", newline="") as fh:

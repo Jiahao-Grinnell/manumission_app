@@ -31,6 +31,22 @@ class PlaceTests(unittest.TestCase):
         self.assertEqual(rows[0]["Order"], 1)
         self.assertEqual(rows[0]["Arrival Date"], "1931-05-17")
 
+    def test_dedupe_place_rows_renumbers_routes_per_person(self) -> None:
+        rows = dedupe_place_rows(
+            [
+                {"Name": "Mubarak", "Place": "Muost", "Order": 1},
+                {"Name": "Sulaiman", "Place": "Muost", "Order": 1},
+                {"Name": "Mubarak", "Place": "Haddin", "Order": 2},
+                {"Name": "Sulaiman", "Place": "Haddin", "Order": 2},
+            ]
+        )
+        by_name = {
+            name: [(row["Place"], row["Order"]) for row in rows if row["Name"] == name]
+            for name in ("Mubarak", "Sulaiman")
+        }
+        self.assertEqual(by_name["Mubarak"], [("Muost", 1), ("Haddin", 2)])
+        self.assertEqual(by_name["Sulaiman"], [("Muost", 1), ("Haddin", 2)])
+
 
 if __name__ == "__main__":
     unittest.main()

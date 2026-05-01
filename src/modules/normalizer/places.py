@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections import defaultdict
 from typing import Any
 
 from shared.text_utils import normalize_ws, strip_accents
@@ -97,9 +98,15 @@ def dedupe_place_rows(rows: list[dict[str, Any]], *, drop_internal: bool = True)
 
     positives = [row for row in best.values() if _int_value(row.get("Order")) > 0]
     zeroes = [row for row in best.values() if _int_value(row.get("Order")) == 0]
-    positives.sort(key=lambda row: (_int_value(row.get("Order")), str(row.get("Arrival Date") or ""), row["Place"].lower()))
-    for index, row in enumerate(positives, start=1):
-        row["Order"] = index
+    positives_by_name: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in positives:
+        positives_by_name[str(row.get("Name") or "").casefold()].append(row)
+    positives = []
+    for _name, person_rows in sorted(positives_by_name.items(), key=lambda item: item[0]):
+        person_rows.sort(key=lambda row: (_int_value(row.get("Order")), str(row.get("Arrival Date") or ""), row["Place"].lower()))
+        for index, row in enumerate(person_rows, start=1):
+            row["Order"] = index
+        positives.extend(person_rows)
     zeroes.sort(key=lambda row: (str(row.get("Arrival Date") or ""), row["Place"].lower()))
     out = positives + zeroes
     if drop_internal:

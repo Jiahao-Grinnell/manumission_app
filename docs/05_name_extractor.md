@@ -141,10 +141,14 @@ Implemented checks:
 
 - `ROLE_POSITIVE_PATTERNS`: `statement of {name}`, `slave {name}`, `negro {name}`, `case of the negro {name}`, `certain {name} negro ... slave`, `slaves whose names are ... {name}`, `refugee slaves ... {name}`, `grant certificate ... to {name}`, `{name} requests repatriation`
 - `ROLE_NEGATIVE_PATTERNS`: `sold to {name}`, `bought by {name}`, `belonging to {name}`, `statement recorded by {name}`, `letter from {name}`
+- final candidates must be present in the current page OCR; model-provided evidence can explain a candidate but cannot prove the name exists
+- positive and negative role rules run only on OCR contexts around the name, not on LLM-generated evidence text
 - official-title context detection, narrowed to direct title-before-name forms such as `Captain X` rather than any nearby official title in the page window
 - `free born` plus `not a slave`
 - generic subject phrase rejection for unnamed labels such as `The Slave`, `the negro`, or `this man`
 - basic name validation using the shared normalizer, without bypassing stopword rejection for two-word generic phrases
+
+This OCR-presence gate prevents full-PDF false positives where the recall pass invents a name and attaches plausible-looking evidence such as `the following refugee slaves: Mubarak` even though the name is absent from the page.
 
 The merge step imports shared logic from `modules.normalizer.names` so name comparison heuristics stay consistent across modules.
 
@@ -192,6 +196,7 @@ src/modules/name_extractor/
     |-- fixtures/
     |   |-- freeborn_page.txt
     |   |-- grouped_list.txt
+    |   |-- admin_forwarding_p279.txt
     |   |-- owner_vs_slave.txt
     |   |-- sample1_p011_abdulla.txt
     |   |-- sample2_p010_subject_list.txt

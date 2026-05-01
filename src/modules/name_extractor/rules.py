@@ -102,6 +102,10 @@ def iter_name_contexts(name: str, ocr: str, window: int = 140) -> list[str]:
     return contexts
 
 
+def name_has_ocr_context(name: str, ocr: str) -> bool:
+    return bool(iter_name_contexts(name, ocr))
+
+
 def compile_name_phrase(pattern_template: str, name: str) -> re.Pattern[str]:
     tokens = [re.escape(token) for token in normalize_name(name).split() if token]
     joined = r"[\s,.;:'\"()\-]+".join(tokens) if tokens else r""
@@ -195,7 +199,18 @@ def explain_candidate_decision(name: str, evidence: str, ocr: str) -> dict[str, 
             "positive_matches": [],
             "negative_matches": [],
         }
-    texts = [text for text in [cleaned_evidence, *iter_name_contexts(cleaned_name, ocr)] if text]
+    contexts = iter_name_contexts(cleaned_name, ocr)
+    if not contexts:
+        return {
+            "keep": False,
+            "reason_type": "name_absent_from_ocr",
+            "reason": "Candidate name is not present on this OCR page.",
+            "excerpt": cleaned_evidence or clean_evidence(ocr),
+            "positive_matches": [],
+            "negative_matches": [],
+        }
+
+    texts = [text for text in contexts if text]
     positive = [hit for text in texts for hit in positive_matches(cleaned_name, text)]
     negative = [hit for text in texts for hit in negative_matches(cleaned_name, text)]
 

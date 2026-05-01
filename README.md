@@ -134,7 +134,7 @@ Then open:
 http://127.0.0.1:5105/names/
 ```
 
-The name extractor reads OCR text from `data/ocr_text/<doc_id>/` plus classifier results from `data/intermediate/<doc_id>/pNNN.classify.json`, writes `pNNN.names.json`, and preserves every pipeline stage for debugging. The UI does not accept freeform `doc_id` entry: it auto-lists only documents that have at least one page with `should_extract=true`. If a document is missing from the dropdown, run the page classifier on that document first and make sure at least one page was kept for extraction.
+The name extractor reads OCR text from `data/ocr_text/<doc_id>/` plus classifier results from `data/intermediate/<doc_id>/pNNN.classify.json`, writes `pNNN.names.json`, and preserves every pipeline stage for debugging. Final names must be present in the current page OCR; model evidence is kept for explanation but cannot prove a name exists. The UI does not accept freeform `doc_id` entry: it auto-lists only documents that have at least one page with `should_extract=true`. If a document is missing from the dropdown, run the page classifier on that document first and make sure at least one page was kept for extraction.
 
 To run the current metadata extractor UI:
 
@@ -162,7 +162,7 @@ Then open:
 http://127.0.0.1:5107/places/
 ```
 
-The place extractor reads OCR text from `data/ocr_text/<doc_id>/`, page-classifier results from `data/intermediate/<doc_id>/pNNN.classify.json`, and name results from `data/intermediate/<doc_id>/pNNN.names.json`. It writes `pNNN.places.json`, stores positive-order route rows for the final `name place.csv`, preserves `order=0` background/admin mentions in intermediate JSON and the UI for review, keeps candidate, verified, date-enriched, and reconciled route rows for debugging, exposes direct CSV download buttons for the current page or selected person, and includes a `Clear All Results` action that removes saved `pNNN.places.json` outputs for the selected document after confirmation.
+The place extractor reads OCR text from `data/ocr_text/<doc_id>/`, page-classifier results from `data/intermediate/<doc_id>/pNNN.classify.json`, and name results from `data/intermediate/<doc_id>/pNNN.names.json`. It writes `pNNN.places.json`, stores positive-order route rows for the final `name place.csv`, preserves `order=0` background/admin mentions in intermediate JSON and the UI for review, skips names absent from the current page OCR, keeps route order independent per person, keeps candidate, verified, date-enriched, and reconciled route rows for debugging, exposes direct CSV download buttons for the current page or selected person, and includes a `Clear All Results` action that removes saved `pNNN.places.json` outputs for the selected document after confirmation.
 
 To run the current orchestration dashboard:
 

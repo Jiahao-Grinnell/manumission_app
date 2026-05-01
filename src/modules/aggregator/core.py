@@ -118,8 +118,8 @@ def _read_page_detail(inter_dir: Path, page: int) -> list[dict[str, Any]]:
 
 def _read_page_places(inter_dir: Path, page: int) -> list[dict[str, Any]]:
     data = _read_json_optional(inter_dir / f"p{page:03d}.places.json")
-    rows = _extract_rows(data, keys=("rows", "place_rows", "places"))
-    if not rows and isinstance(data, dict):
+    rows: list[dict[str, Any]] = []
+    if isinstance(data, dict):
         for person in data.get("people") or []:
             if not isinstance(person, dict):
                 continue
@@ -133,6 +133,8 @@ def _read_page_places(inter_dir: Path, page: int) -> list[dict[str, Any]]:
                         rows.append(item)
             elif name:
                 rows.append({"Name": name, "Page": page, "Place": "", "Order": "", "Arrival Date": "", "Date Confidence": "", "Time Info": ""})
+    if not rows:
+        rows = _extract_rows(data, keys=("rows", "place_rows", "places"))
     for row in rows:
         row.setdefault("Page", page)
     return rows

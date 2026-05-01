@@ -1,6 +1,6 @@
 You are reading ONE OCR page from a historical slavery / manumission archive.
 
-Your task is to decide whether this page should be extracted, and if so infer the page-level report type.
+Your task is to decide whether this page contains any visible personal name, and if so infer the page-level report type.
 
 Return JSON only:
 {
@@ -33,15 +33,14 @@ Decision hints:
 - Choose statement for "Statement of...", "I was born...", "I was kidnapped...", "I request...", recorded testimony, or declarations.
 - Choose correspondence for official letters, telegrams, memoranda, recommendations, forwarding notes, investigative discussion, repatriation requests/arrangements, passage, delivery to a place, maintenance, or certificate handling.
 
-Skip only when the page is clearly one of these:
-- index or list page
-- archive metadata / cover / about-this-record page
-- OCR too damaged to extract reliably
+Skip only when the page has no visible personal names.
 
 Important:
 - Use ONLY this page.
-- Do not decide skip_reason merely because the page is short or administrative.
-- Administrative cover letters that still name manumission subjects should still be extracted.
+- Do not decide skip_reason because the page is short, administrative, legal, policy-like, an index, or metadata.
+- If the page contains any personal name, including an official, buyer, owner, seller, witness, signatory, or non-subject person, set should_extract=true.
+- Later modules decide which names, if any, are enslaved/manumission subjects.
+- If there is no visible personal name, set should_extract=false. Use bad_ocr only when the no-name page is unreadable; otherwise use record_metadata.
 - evidence must be a short quote or phrase from the page, max 25 words.
 - Output JSON only.
 

@@ -1,4 +1,5 @@
 Do a second, recall-focused pass over this same OCR page and return ONLY named enslaved or manumission subjects that might have been missed.
+Only return names whose letters appear on this OCR page. Do not infer, complete, or carry over a name from another page, from document context, or from a likely template.
 
 Return JSON only:
 {
@@ -18,6 +19,7 @@ Look especially for:
 
 Still exclude owners, officials, buyers, sellers, and any free-born or non-slave person.
 If a page contains a transfer chain like "sold to X" or "bought by Y", those names are not subjects.
+If the OCR page has no visible personal subject names, return an empty named_people list.
 Output JSON only.
 
 OCR TEXT:

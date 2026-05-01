@@ -56,13 +56,13 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(result.report_type, "correspondence")
         self.assertFalse(result.override["applied"])
 
-    def test_classify_index_fixture_keeps_skip_reason(self) -> None:
+    def test_classify_index_fixture_with_person_name_is_extractable(self) -> None:
         client = FakeClient(
             [{"should_extract": False, "skip_reason": "index", "report_type": "correspondence", "evidence": "Index of papers relating to slavery in Kuwait"}]
         )
         result = classify(_fixture("index_page.txt"), client=client)
-        self.assertFalse(result.should_extract)
-        self.assertEqual(result.skip_reason, "index")
+        self.assertTrue(result.should_extract)
+        self.assertIsNone(result.skip_reason)
 
     def test_classify_bad_ocr_fixture_keeps_skip_reason(self) -> None:
         client = FakeClient(
@@ -71,6 +71,23 @@ class CoreTests(unittest.TestCase):
         result = classify(_fixture("bad_ocr_page.txt"), client=client)
         self.assertFalse(result.should_extract)
         self.assertEqual(result.skip_reason, "bad_ocr")
+
+    def test_classify_admin_forwarding_overrides_model_extract(self) -> None:
+        client = FakeClient(
+            [{"should_extract": True, "skip_reason": None, "report_type": "correspondence", "evidence": "forwarded to the Political Agent"}]
+        )
+        result = classify(_fixture("admin_forwarding_p279.txt"), client=client)
+        self.assertFalse(result.should_extract)
+        self.assertEqual(result.skip_reason, "record_metadata")
+        self.assertEqual(result.override["skip_override"]["applied_by"], "no_person_name_skip_hint")
+
+    def test_classify_model_skip_is_ignored_when_person_name_present(self) -> None:
+        client = FakeClient(
+            [{"should_extract": False, "skip_reason": "record_metadata", "report_type": "correspondence", "evidence": "policy note"}]
+        )
+        result = classify("Policy note copied to Sheikh Mubarak for information.", client=client)
+        self.assertTrue(result.should_extract)
+        self.assertIsNone(result.skip_reason)
 
     def test_run_folder_skips_existing_results_when_resume_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

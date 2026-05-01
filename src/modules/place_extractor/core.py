@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from modules.normalizer.dates import extract_doc_year
+from modules.normalizer.names import build_name_regex
 from modules.normalizer.places import dedupe_place_rows, merge_place_date_enrichment
 from shared.config import settings
 from shared.ollama_client import OllamaClient
@@ -86,6 +87,30 @@ def extract_for_name(
     doc_year = extract_doc_year(prepared_text)
     selected_client = client or OllamaClient()
     stats = CallStats()
+
+    if not _name_in_ocr(name, prepared_text):
+        elapsed = round(time.time() - started, 2)
+        skipped_stage = {
+            "stage": "skipped",
+            "label": "Skipped",
+            "rows": [],
+            "fallback_applied": False,
+            "fallback_reason": "Skipped because the subject name is not present on this OCR page.",
+        }
+        return PlacePersonResult(
+            name=name,
+            rows=[],
+            passes={
+                "candidate": skipped_stage,
+                "verified": skipped_stage,
+                "date_enrich": skipped_stage,
+                "reconciled": skipped_stage,
+            },
+            validation=[],
+            model_calls=0,
+            repair_calls=0,
+            elapsed_seconds=elapsed,
+        )
 
     pass_stage = run_candidate_pass(selected_client, prepared_text, name, page, stats)
     recall_stage = run_recall_pass(selected_client, prepared_text, name, page, doc_year, stats)
@@ -457,6 +482,11 @@ def _float_value(value: Any) -> float:
         return float(value or 0)
     except Exception:
         return 0.0
+
+
+def _name_in_ocr(name: str, ocr: str) -> bool:
+    pattern = build_name_regex(name)
+    return bool(pattern and pattern.search(ocr or ""))
 
 
 def _clean_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:

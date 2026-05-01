@@ -54,6 +54,24 @@ class RulesTests(unittest.TestCase):
         self.assertEqual({item["name"] for item in final_people}, {"Aman bin Faragh", "Zuwaid bin Mabrook", "Daaji bin Khamis"})
         self.assertEqual(removed, [])
 
+    def test_hallucinated_evidence_cannot_keep_absent_name(self) -> None:
+        text = _fixture("admin_forwarding_p279.txt")
+        decision = explain_candidate_decision("Mubarak", "the following refugee slaves: Mubarak", text)
+        self.assertFalse(decision["keep"])
+        self.assertEqual(decision["reason_type"], "name_absent_from_ocr")
+
+    def test_following_slave_list_still_keeps_ocr_names(self) -> None:
+        text = _fixture("grouped_list.txt")
+        final_people, removed, _ = apply_rule_filter(
+            [
+                {"name": "Ahmad bin Said", "evidence": "The following refugee slaves request repatriation"},
+                {"name": "Fatima bint Ali", "evidence": "The following refugee slaves request repatriation"},
+            ],
+            text,
+        )
+        self.assertEqual([item["name"] for item in final_people], ["Ahmad bin Said", "Fatima bint Ali"])
+        self.assertEqual(removed, [])
+
     def test_rule_seed_candidates_recovers_certain_negro_and_subject_list(self) -> None:
         text = _fixture("sample2_p010_subject_list.txt")
         self.assertEqual(

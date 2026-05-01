@@ -61,7 +61,7 @@ def aggregate(doc_id: str) -> AggregationResult:
 
         meta = read_json(paths.meta(page_num))
         places = read_json(paths.places(page_num))
-        page_place_rows = places["rows"] or fallback_people_rows(places)
+        page_place_rows = per_person_rows(places) or places["rows"]
         detail_rows.extend(meta["rows"])
         place_rows.extend(page_place_rows)
         status_inputs.append((page_num, meta["rows"], page_place_rows))
@@ -82,8 +82,8 @@ def aggregate(doc_id: str) -> AggregationResult:
 Cross-page cleaning added during aggregation:
 
 - In one `doc_id`, merge names such as "Mariam bint Yusuf" and "Marium bint Yusuf" with `names_maybe_same_person`.
-- Prefer the top-level `pNNN.places.json["rows"]`; fall back to `people[].rows` only for older artifacts that do not have top-level rows.
-- Deduplicate `name place.csv` rows by `(Name, Page, Place)` with `dedupe_place_rows`.
+- Prefer per-person `pNNN.places.json["people"][].rows`; fall back to top-level `rows` only for older artifacts. This preserves per-person route order on multi-subject pages.
+- Deduplicate `name place.csv` rows by `(Name, Page, Place)` with `dedupe_place_rows`; positive `Order` values are normalized independently per `Name`.
 - Exclude `Order=0` background/admin place rows from the final `name place.csv`. They remain available in `pNNN.places.json` and the place-review UI.
 - Compute `run_status.csv` `detail_rows` and `place_rows` from cleaned final rows, so status counts match the delivered CSVs.
 - Normalize missing values to `""` and do not keep `None`.
