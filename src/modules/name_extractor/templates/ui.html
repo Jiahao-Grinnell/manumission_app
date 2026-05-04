@@ -12,7 +12,7 @@
         <div class="hero-copy">
           <p class="eyebrow">Module 05</p>
           <h1>Name Extractor</h1>
-          <p>Review the full five-stage subject-name pipeline, inspect dropped candidates, and rerun one model stage without recomputing the whole page.</p>
+          <p>Review the span-grounded subject-name pipeline, inspect dropped candidates, and rerun the current page.</p>
         </div>
         <div class="actions">
           <button id="run-single">Run This Page</button>
@@ -106,7 +106,7 @@
           <header>
             <div>
               <h2>Final Names</h2>
-              <p>People kept after verify plus the final rule filter.</p>
+              <p>People kept after context labeling plus the final decision stage.</p>
             </div>
           </header>
           <div class="card-body">
@@ -141,11 +141,11 @@
             <header>
               <div>
                 <h2>Stage Flow</h2>
-                <p>Each card shows the input count, output count, fallback state, and parsed model JSON.</p>
+                <p>Each card shows candidate flow, context, role labels, scoring, and parsed model JSON.</p>
               </div>
             </header>
             <div class="card-body stage-grid" id="stage-grid">
-              <div class="empty">Run name extraction to see the five-stage pipeline.</div>
+              <div class="empty">Run name extraction to see the V2 pipeline.</div>
             </div>
           </article>
 
@@ -175,8 +175,15 @@
       </section>
     </main>
 
+    <script id="initial-data" type="application/json">{{ initial_page_data|default({}, true)|tojson }}</script>
     <script>
-      const initialData = {{ (initial_page_data or {}) | tojson }};
+      const initialDataNode = document.getElementById("initial-data");
+      let initialData = {};
+      try {
+        initialData = JSON.parse(initialDataNode ? initialDataNode.textContent : "{}");
+      } catch (error) {
+        initialData = {};
+      }
       const docsSelect = document.getElementById("doc-select");
       const pageSelect = document.getElementById("page-select");
       const rerunSelect = document.getElementById("rerun-select");
@@ -278,7 +285,7 @@
           metricClassifier.textContent = `Classifier evidence: ${classify.evidence || "-"}`;
           finalRows.innerHTML = "<tr><td colspan='2'>No result yet.</td></tr>";
           dropRows.innerHTML = "<tr><td colspan='3'>No dropped candidates yet.</td></tr>";
-          stageGrid.innerHTML = "<div class='empty'>Run name extraction to see the five-stage pipeline.</div>";
+          stageGrid.innerHTML = "<div class='empty'>Run name extraction to see the pipeline.</div>";
           return;
         }
 
@@ -307,7 +314,30 @@
       }
 
       function renderStages(passes) {
-        const stageOrder = ["pass1", "pass1_filter", "recall", "recall_filter", "merged", "verify", "rule_filter"];
+        const preferredOrder = [
+          "segments",
+          "mention_scan",
+          "candidate_mining",
+          "span_gate",
+          "merge",
+          "context_bundle",
+          "role_label",
+          "escalation",
+          "deterministic_signals",
+          "decision",
+          "review_queue",
+          "pass1",
+          "pass1_filter",
+          "recall",
+          "recall_filter",
+          "merged",
+          "verify",
+          "rule_filter"
+        ];
+        const stageOrder = [
+          ...preferredOrder.filter(key => passes[key]),
+          ...Object.keys(passes).filter(key => !preferredOrder.includes(key))
+        ];
         const cards = stageOrder
           .filter(key => passes[key])
           .map(key => {

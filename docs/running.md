@@ -40,7 +40,7 @@ Available now:
 - `page_classifier` keeps OCR pages with visible personal names, skips pages without visible personal names, and classifies report types.
 - `page_classifier` has a CLI and a standalone local UI at `http://127.0.0.1:5104/classify/`.
 - `page_classifier` writes durable JSON artifacts under `data/intermediate/<doc_id>/pNNN.classify.json`.
-- `name_extractor` can run the five-stage subject-name pipeline for pages where `should_extract=true`.
+- `name_extractor` can run the V2.1 span-grounded subject-name pipeline for pages where `should_extract=true`.
 - `name_extractor` has a CLI and a standalone local UI at `http://127.0.0.1:5105/names/`.
 - `name_extractor` writes durable JSON artifacts under `data/intermediate/<doc_id>/pNNN.names.json`.
 - `name_extractor` only lists documents that already have OCR text in `data/ocr_text/<doc_id>/` and at least one classifier result with `should_extract=true`.
@@ -54,6 +54,7 @@ Available now:
 - `place_extractor` writes durable JSON artifacts under `data/intermediate/<doc_id>/pNNN.places.json`.
 - `place_extractor` only lists documents and pages that already have OCR text, `should_extract=true`, and non-empty `pNNN.names.json`.
 - `orchestrator` can run a document end to end from a standalone dashboard at `http://127.0.0.1:5110/orchestrate/`.
+- `orchestrator` renders each PDF page in memory and OCRs it immediately, so normal end-to-end runs save only `data/ocr_text/<doc_id>/pNNN.txt` and do not create new page PNGs.
 - `orchestrator` persists `data/logs/<doc_id>/job.json`, `pipeline.log`, and `events.jsonl`.
 - `orchestrator` server-renders the current job summary, per-page table, and live log on first load, then keeps the page current through SSE with polling fallback and visible connection status.
 - `orchestrator` can pause after the current stage, resume from saved artifacts, clear generated results for a document while keeping the source PDF, and preview/download final CSV outputs directly in the dashboard.
@@ -193,7 +194,7 @@ cp .env.example .env
 Important model settings:
 
 ```text
-OLLAMA_MODEL=qwen2.5:14b-instruct
+OLLAMA_MODEL=mistral-small3.1:latest
 OCR_MODEL=glm-ocr:latest
 ```
 
@@ -211,7 +212,7 @@ This step needs internet access. It downloads models into `volumes/ollama/`.
 Download the text extraction model:
 
 ```bash
-./scripts/seed_model.sh qwen2.5:14b-instruct
+./scripts/seed_model.sh mistral-small3.1:latest
 ```
 
 Download the OCR vision model:
@@ -223,14 +224,14 @@ Download the OCR vision model:
 If WSL says the script is not executable:
 
 ```bash
-bash scripts/seed_model.sh qwen2.5:14b-instruct
+bash scripts/seed_model.sh mistral-small3.1:latest
 bash scripts/seed_model.sh glm-ocr:latest
 ```
 
 From PowerShell:
 
 ```powershell
-wsl bash ./scripts/seed_model.sh qwen2.5:14b-instruct
+wsl bash ./scripts/seed_model.sh mistral-small3.1:latest
 wsl bash ./scripts/seed_model.sh glm-ocr:latest
 ```
 
@@ -306,7 +307,7 @@ PASS: all required models are present
 Gateway verification complete.
 ```
 
-The first run can take several minutes because `qwen2.5:14b-instruct` has to load into GPU memory. If the model load or generation hangs, the script fails after `VERIFY_GENERATE_TIMEOUT`, which defaults to 900 seconds.
+The first run can take several minutes because `mistral-small3.1:latest` has to load into GPU memory. If the model load or generation hangs, the script fails after `VERIFY_GENERATE_TIMEOUT`, which defaults to 900 seconds.
 
 Host isolation check:
 
@@ -346,7 +347,7 @@ docker run --rm \
   -v "$(pwd)":/app \
   -w /app \
   manumission-base:phase1 \
-  python -c "from shared.ollama_client import OllamaClient; from shared.schemas import CallStats; c=OllamaClient(model='qwen2.5:14b-instruct'); s=CallStats(); print(c.generate('Reply with exactly OK.', s, num_predict=10)); print(s)"
+  python -c "from shared.ollama_client import OllamaClient; from shared.schemas import CallStats; c=OllamaClient(model='mistral-small3.1:latest'); s=CallStats(); print(c.generate('Reply with exactly OK.', s, num_predict=10)); print(s)"
 ```
 
 Expected:
@@ -835,10 +836,10 @@ Expected highlights:
 "final_reasons":
 ```
 
-Rerun only `verify` for the same page:
+Rerun only `role_label` for the same page:
 
 ```bash
-curl -X POST http://127.0.0.1:5105/names/rerun-pass/sample%20input%201/6/verify \
+curl -X POST http://127.0.0.1:5105/names/rerun-pass/sample%20input%201/6/role_label \
   -H "Content-Type: application/json" \
   -d '{}'
 ```
@@ -872,7 +873,7 @@ The UI should show:
 
 - extractable pages only
 - final names highlighted separately from dropped names
-- stage cards for `pass1`, `pass1_filter`, `recall`, `recall_filter`, `merged`, `verify`, and `rule_filter`
+- stage cards for `segments`, `mention_scan`, `candidate_mining`, `span_gate`, `merge`, `context_bundle`, `role_label`, `escalation`, `deterministic_signals`, `decision`, and `review_queue`
 - prompt text and parsed JSON for each model stage
 - dropped-candidate reasons tagged by stage
 
@@ -1114,13 +1115,13 @@ The dashboard supports:
 - uploading a PDF and starting an end-to-end job
 - selecting an existing `data/input_pdfs/*.pdf` file and running it
 - showing the current job summary, progress bars, per-page status table, and live log tail immediately on page load
-- per-page status cells for ingest, OCR, classify, names, meta + places, and aggregate
+- per-page status cells for ingest, OCR, classify, names, meta + places, and aggregate; ingest and OCR are driven by one combined in-memory render+OCR step
 - live updates through `GET /orchestrate/stream/<job_id>` when SSE is available, with automatic fallback polling of `GET /orchestrate/status/<job_id>` when it is not
 - a visible dashboard connection/error message so the operator can tell whether live updates are connected, retrying, or using fallback refresh
 - persistent `data/logs/<doc_id>/job.json`, `pipeline.log`, and `events.jsonl`
 - resume, soft-pause, and soft-cancel controls for the selected job
 - automatic coercion of stale `running` jobs to `paused` after service restart or worker loss
-- a clear-results control that removes generated pages, OCR text, intermediate JSON, outputs, logs, and audit artifacts while keeping the source PDF
+- a clear-results control that removes generated pages if present, OCR text, intermediate JSON, outputs, logs, and audit artifacts while keeping the source PDF
 - final output preview and download cards for `Detailed info.csv`, `name place.csv`, and `run_status.csv`
 
 Compose serves the standalone orchestrator with a threaded Gunicorn command:
@@ -1280,7 +1281,7 @@ To switch the OCR model:
 
 3. Restart relevant containers.
 
-Keep model tags exact. `qwen2.5:14b-instruct` and `qwen2.5:latest` are different models.
+Keep model tags exact. `mistral-small3.1:latest`, `qwen2.5:14b-instruct`, and `qwen2.5:latest` are different models.
 
 ## 22. Useful Commands
 
@@ -1440,7 +1441,7 @@ docker compose up -d ollama
 
 ### First model call is very slow
 
-Normal. The model is loading into GPU memory. On the tested RTX 5000 Ada setup, the first `qwen2.5:14b-instruct` call can take a couple of minutes.
+Normal. The model is loading into GPU memory. On the tested RTX 5000 Ada setup, the first `mistral-small3.1:latest` call can take a couple of minutes.
 
 If `bash scripts/verify_gateway.sh` appears stuck at model generation, check Task Manager or run this in another terminal:
 
@@ -1470,7 +1471,7 @@ This avoids keeping the text model and OCR model in VRAM at the same time on a 1
 | Artifact | Path |
 |---|---|
 | Input PDFs | `data/input_pdfs/` |
-| Rendered page PNGs | `data/pages/<doc_id>/` |
+| Rendered page PNGs | `data/pages/<doc_id>/` for standalone ingest/debug runs; new orchestrator runs do not create them |
 | OCR text | `data/ocr_text/<doc_id>/pNNN.txt` |
 | Intermediate JSON | `data/intermediate/<doc_id>/` |
 | Final CSVs | `data/output/<doc_id>/` |

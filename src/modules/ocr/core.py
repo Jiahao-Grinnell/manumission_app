@@ -168,20 +168,57 @@ def ocr_page(
 ) -> OcrResult:
     image = Path(image_path)
     output = Path(out_file) if out_file else image.with_suffix(".txt")
+    img = cv2.imread(str(image))
+    if img is None:
+        raise FileNotFoundError(f"Cannot read image: {image}")
+    return ocr_image_bgr(
+        img,
+        output,
+        image_name=image.name,
+        model=model,
+        ollama_generate_url=ollama_generate_url,
+        prompt=prompt,
+        preprocess_long=preprocess_long,
+        min_long_for_ocr=min_long_for_ocr,
+        tile=tile,
+        max_new_tokens=max_new_tokens,
+        timeout_s=timeout_s,
+        debug_dir=debug_dir,
+    )
+
+
+def ocr_image_bgr(
+    image_bgr: Any,
+    out_file: str | Path,
+    *,
+    image_name: str | Path = "page.png",
+    model: str | None = None,
+    ollama_generate_url: str | None = None,
+    prompt: str | None = None,
+    preprocess_long: int = 2600,
+    min_long_for_ocr: int = 1800,
+    tile: bool = True,
+    max_new_tokens: int = 1200,
+    timeout_s: int = 240,
+    debug_dir: str | Path | None = None,
+) -> OcrResult:
+    """OCR an already-loaded BGR image without requiring an image file on disk."""
+
+    image = Path(str(image_name))
+    output = Path(out_file)
     selected_model = model or settings.OCR_MODEL
     selected_url = ollama_generate_url or settings.OLLAMA_URL
     selected_prompt = load_prompt(prompt)
     page_start = time.time()
 
-    img = cv2.imread(str(image))
-    if img is None:
-        raise FileNotFoundError(f"Cannot read image: {image}")
+    if image_bgr is None:
+        raise ValueError("Cannot OCR an empty image.")
 
     debug_root = Path(debug_dir) if debug_dir else None
     if debug_root:
         debug_root.mkdir(parents=True, exist_ok=True)
 
-    prep = preprocess_page(img, preprocess_long=preprocess_long, min_long_for_ocr=min_long_for_ocr, tile=tile)
+    prep = preprocess_page(image_bgr, preprocess_long=preprocess_long, min_long_for_ocr=min_long_for_ocr, tile=tile)
     debug_files: list[str] = []
     texts: list[str] = []
 

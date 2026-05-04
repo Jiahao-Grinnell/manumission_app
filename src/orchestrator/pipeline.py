@@ -38,10 +38,13 @@ def run_document(job_id: str, doc_id: str, *, options: PipelineOptions | None = 
 
     resume = bool(opts.get("resume", True))
     try:
-        _run_ingest(job, source_pdf=source_pdf, dpi=int(opts.get("dpi") or 300), resume=resume)
-        if _stop_if_requested(job):
-            return job
-        _run_folder_stage(job, "ocr", _png_pages(paths.pages_dir), resume=resume, ocr_model=str(opts.get("ocr_model") or settings.OCR_MODEL))
+        _run_ingest_ocr(
+            job,
+            source_pdf=source_pdf,
+            dpi=int(opts.get("dpi") or 300),
+            resume=resume,
+            ocr_model=str(opts.get("ocr_model") or settings.OCR_MODEL),
+        )
         if _stop_if_requested(job):
             return job
         _run_folder_stage(job, "classify", _ocr_pages(paths.ocr_dir), resume=resume, text_model=str(opts.get("text_model") or settings.OLLAMA_MODEL))
@@ -112,6 +115,64 @@ def _run_ingest(job: dict[str, Any], *, source_pdf: Path | None, dpi: int, resum
         job_store.mark_stage(job, "ingest", page, state=status, detail="page image ready" if status == "done" else "page image missing")
     job_store.save_job(job)
     job_store.emit_event(job, "page_updated", {"stage": "ingest"})
+
+
+def _run_ingest_ocr(
+    job: dict[str, Any],
+    *,
+    source_pdf: Path | None,
+    dpi: int,
+    resume: bool,
+    ocr_model: str,
+) -> None:
+    doc_id = str(job["doc_id"])
+    paths = doc_paths(doc_id)
+    existing_ocr_pages = _ocr_pages(paths.ocr_dir)
+
+    if source_pdf is None:
+        if not existing_ocr_pages:
+            raise FileNotFoundError(f"No PDF source or existing OCR text found for {doc_id}")
+        existing_page_set = set(existing_ocr_pages)
+        job_store.ensure_pages(job, max(existing_ocr_pages))
+        for page in range(1, max(existing_ocr_pages) + 1):
+            if page not in existing_page_set:
+                job_store.mark_stage(job, "ingest", page, state="skipped", detail="no existing OCR text")
+                job_store.mark_stage(job, "ocr", page, state="skipped", detail="no existing OCR text")
+                continue
+            text_path = paths.ocr_text(page)
+            ocr_state = "done" if artifact_ok(text_path, "ocr_text") else "failed"
+            job_store.mark_stage(job, "ingest", page, state="skipped", detail="reused existing OCR text")
+            job_store.mark_stage(
+                job,
+                "ocr",
+                page,
+                state=ocr_state,
+                detail="existing OCR text" if ocr_state == "done" else "missing OCR text",
+            )
+        job_store.append_log(job, f"Reused existing OCR text for {doc_id}; no source PDF was provided.")
+        job_store.save_job(job)
+        job_store.emit_event(job, "page_updated", {"stage": "ocr"})
+        return
+
+    job["current_stage"] = "ocr"
+    job_store.save_job(job)
+    job_store.emit_event(job, "page_updated", {"stage": "ocr"})
+    job_store.append_log(job, f"Running combined ingest+OCR from {source_pdf.name}; page images will not be stored.")
+    summary = run_stage(
+        "ingest_ocr",
+        doc_id,
+        source_pdf=source_pdf,
+        dpi=dpi,
+        resume=resume,
+        ocr_model=ocr_model or None,
+        progress=_ingest_ocr_progress_tracker(job),
+    )
+    page_count = int(summary.get("page_count") or summary.get("total_pages") or 0)
+    if page_count:
+        job_store.ensure_pages(job, page_count)
+    _apply_ingest_ocr_summary(job, summary)
+    job_store.save_job(job)
+    job_store.emit_event(job, "page_updated", {"stage": "ocr"})
 
 
 def _run_folder_stage(
@@ -203,6 +264,64 @@ def _progress_tracker(job: dict[str, Any], stage: str, *, page_numbers: list[int
                 job_store.emit_event(job, "page_updated", {"stage": stage, "page": next_page})
 
     return callback
+
+
+def _ingest_ocr_progress_tracker(job: dict[str, Any]) -> Callable[[str, int, int, Path], None]:
+    def callback(action: str, page: int, total: int, path: Path) -> None:
+        if int(job.get("total_pages") or 0) < int(total):
+            job_store.ensure_pages(job, int(total))
+
+        if action == "skip":
+            job_store.mark_stage(job, "ingest", page, state="skipped", detail="OCR text already exists")
+            job_store.mark_stage(job, "ocr", page, state="skipped", detail=f"{path.name} skipped")
+            state = "skipped"
+        elif action == "render":
+            job_store.mark_stage(job, "ingest", page, state="done", detail="rendered directly for OCR")
+            job_store.mark_stage(job, "ocr", page, state="running", detail=f"processing {path.name}")
+            state = "running"
+        elif action == "done":
+            job_store.mark_stage(job, "ingest", page, state="done", detail="rendered directly for OCR")
+            job_store.mark_stage(job, "ocr", page, state="done", detail=f"{path.name} ready")
+            state = "done"
+        elif action == "error":
+            page_record = job_store.get_page(job, page)
+            if page_record["ingest"]["state"] not in {"done", "skipped"}:
+                job_store.mark_stage(job, "ingest", page, state="failed", detail="render/OCR failed", error="render/OCR failed")
+            job_store.mark_stage(job, "ocr", page, state="failed", detail=f"{path.name} failed", error=f"{path.name} failed")
+            _note_page(job, page, "ocr failed")
+            state = "failed"
+        else:
+            return
+
+        job_store.save_job(job)
+        job_store.emit_event(job, "page_updated", {"stage": "ocr", "page": page, "state": state})
+        job_store.append_log(job, f"ingest+ocr page {page:03d}: {state}.")
+
+    return callback
+
+
+def _apply_ingest_ocr_summary(job: dict[str, Any], summary: dict[str, Any]) -> None:
+    for item in summary.get("pages") or []:
+        if not isinstance(item, dict):
+            continue
+        page = int(item.get("page") or 0)
+        if page <= 0:
+            continue
+        raw_status = str(item.get("status") or "")
+        detail = str(item.get("error") or item.get("skip_reason") or item.get("text_file") or item.get("filename") or "")
+        if raw_status == "done":
+            job_store.mark_stage(job, "ingest", page, state="done", detail="rendered directly for OCR")
+            job_store.mark_stage(job, "ocr", page, state="done", detail=detail)
+        elif raw_status == "skipped":
+            job_store.mark_stage(job, "ingest", page, state="skipped", detail="OCR text already exists")
+            job_store.mark_stage(job, "ocr", page, state="skipped", detail=detail)
+        elif raw_status == "error":
+            page_record = job_store.get_page(job, page)
+            if page_record["ingest"]["state"] not in {"done", "skipped"}:
+                job_store.mark_stage(job, "ingest", page, state="failed", detail=detail, error=detail)
+            job_store.mark_stage(job, "ocr", page, state="failed", detail=detail, error=str(item.get("error") or detail))
+            _note_page(job, page, "ocr failed")
+    job_store.save_job(job)
 
 
 def _apply_summary(job: dict[str, Any], stage: str, summary: dict[str, Any]) -> None:

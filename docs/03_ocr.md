@@ -4,7 +4,7 @@
 
 ## 1. Purpose
 
-Run OCR page by page over `data/pages/<doc_id>/p*.png` and produce `data/ocr_text/<doc_id>/p*.txt`.
+Run OCR page by page over `data/pages/<doc_id>/p*.png` and produce `data/ocr_text/<doc_id>/p*.txt`. The standalone OCR UI and CLI still use saved images, while the orchestrator can call the shared in-memory OCR helper after rendering a PDF page without saving the PNG.
 
 The underlying logic **inherits the approach from the original `glm_ocr_ollama.py`**: traditional CV preprocessing (deskew, enhancement, crop, tiling), send each tile to the vision model, merge text, and fall back to a single full-page model call.
 
@@ -15,6 +15,7 @@ Implementation status: Phase 3 was implemented on 2026-04-20. Unit tests run wit
 **Input**:
 
 - `data/pages/<doc_id>/p*.png` from module 02 `pdf_ingest`
+- In orchestrator runs, an in-memory BGR page image produced from PyMuPDF instead of a saved PNG.
 - Model name, defaulting to `glm-ocr:latest`
 - Runtime parameters such as tile count and `max_new_tokens`
 

@@ -1,0 +1,19 @@
+List every visible personal name or visible relation-labeled subject phrase in this OCR page.
+
+Rules:
+- Do not decide whether the person is an enslaved/manumission subject.
+- Do not filter out owners, witnesses, officials, or buyers at this stage.
+- Do not invent or complete names that are not visible in the OCR.
+- Include visible relation labels with named anchors, such as "Salem's sister" or "son of Salem".
+- Exclude unanchored generic phrases such as "his sister", "the woman", "the slave", "three slaves", or "a number of slaves".
+- For each item, provide a short verbatim quote from the OCR containing the name.
+
+Return JSON only:
+{
+  "names": [
+    {"name": string, "span_quote": string}
+  ]
+}
+
+OCR TEXT:
+<<<{ocr}>>>

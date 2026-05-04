@@ -19,12 +19,36 @@ from shared.text_utils import clean_ocr
 from .merging import merge_name_candidates, names_maybe_same_person
 from .passes import run_filter, run_pass1, run_recall, run_verify
 from .rules import apply_rule_filter, clean_evidence, rule_seed_candidates
+from .v2 import run_v2_pipeline
 
 
 ProgressCallback = Callable[[str, int, int, Path], None]
 
-RERUN_ALLOWED = ("pass1", "pass1_filter", "recall", "recall_filter", "verify")
+RERUN_ALLOWED = (
+    "mention_scan",
+    "candidate_mining",
+    "span_gate",
+    "merge",
+    "context_bundle",
+    "role_label",
+    "escalation",
+    "decision",
+    # Legacy aliases remain accepted so old UI selections and artifacts do not fail.
+    "pass1",
+    "pass1_filter",
+    "recall",
+    "recall_filter",
+    "verify",
+)
 STAGE_LABELS = {
+    "mention_scan": "Mention scan",
+    "candidate_mining": "Candidate mining",
+    "span_gate": "Span gate",
+    "merge": "Merge",
+    "context_bundle": "Context bundle",
+    "role_label": "Role label",
+    "escalation": "Escalation",
+    "decision": "Decision",
     "pass1": "Pass 1 raw",
     "pass1_filter": "Pass 1 filter",
     "recall": "Recall raw",
@@ -85,106 +109,24 @@ def extract_names(
 
     prepared_text = clean_ocr(ocr_text or "")
     call_stats = stats or CallStats()
-    started = time.time()
     selected_client = client or OllamaClient()
-    existing_passes = _existing_pass_map(existing_result)
-
-    pass1_stage = (
-        run_pass1(selected_client, prepared_text, call_stats).as_dict()
-        if _should_compute("pass1", start_stage, existing_passes)
-        else _restore_stage(existing_passes["pass1"], "pass1")
+    v2 = run_v2_pipeline(
+        prepared_text,
+        report_type=report_type,
+        classify_record=classify_record or {},
+        client=selected_client,
+        stats=call_stats,
     )
-    pass1_filter_stage = (
-        run_filter(
-            selected_client,
-            prepared_text,
-            pass1_stage["candidates"],
-            call_stats,
-            stage="pass1_filter",
-            label=STAGE_LABELS["pass1_filter"],
-        ).as_dict()
-        if _should_compute("pass1_filter", start_stage, existing_passes)
-        else _restore_stage(existing_passes["pass1_filter"], "pass1_filter")
-    )
-    recall_stage = (
-        run_recall(selected_client, prepared_text, call_stats).as_dict()
-        if _should_compute("recall", start_stage, existing_passes)
-        else _restore_stage(existing_passes["recall"], "recall")
-    )
-    recall_filter_stage = (
-        run_filter(
-            selected_client,
-            prepared_text,
-            recall_stage["candidates"],
-            call_stats,
-            stage="recall_filter",
-            label=STAGE_LABELS["recall_filter"],
-        ).as_dict()
-        if _should_compute("recall_filter", start_stage, existing_passes)
-        else _restore_stage(existing_passes["recall_filter"], "recall_filter")
-    )
-
-    merged_stage = _build_merged_stage(pass1_filter_stage["candidates"], recall_filter_stage["candidates"])
-    verify_stage = (
-        run_verify(selected_client, prepared_text, merged_stage["candidates"], call_stats).as_dict()
-        if _should_compute("verify", start_stage, existing_passes)
-        else _restore_stage(existing_passes["verify"], "verify")
-    )
-    rule_input_candidates = merge_name_candidates(merged_stage["candidates"], verify_stage["candidates"])
-    rule_filter_stage, final_people, final_reasons = _build_rule_stage(rule_input_candidates, prepared_text)
-
-    passes = {
-        "pass1": pass1_stage,
-        "pass1_filter": _attach_removed(
-            pass1_filter_stage,
-            _subset_removed(
-                pass1_filter_stage["input_candidates"],
-                pass1_filter_stage["candidates"],
-                stage="pass1_filter",
-                reason_type="model_filter",
-                reason="Removed by the pass-1 filter stage.",
-            ),
-        ),
-        "recall": recall_stage,
-        "recall_filter": _attach_removed(
-            recall_filter_stage,
-            _subset_removed(
-                recall_filter_stage["input_candidates"],
-                recall_filter_stage["candidates"],
-                stage="recall_filter",
-                reason_type="model_filter",
-                reason="Removed by the recall filter stage.",
-            ),
-        ),
-        "merged": merged_stage,
-        "verify": _attach_removed(
-            verify_stage,
-            _subset_removed(
-                verify_stage["input_candidates"],
-                verify_stage["candidates"],
-                stage="verify",
-                reason_type="model_verify",
-                reason="Removed by the verify stage.",
-            ),
-        ),
-        "rule_filter": rule_filter_stage,
-    }
-
-    removed_candidates = []
-    for stage_name in ("pass1_filter", "recall_filter", "merged", "verify", "rule_filter"):
-        removed_candidates.extend(passes[stage_name].get("removed", []))
-
-    elapsed = round(time.time() - started, 2)
     return NameExtractionResult(
         page=_page_number_from_text(prepared_text),
         report_type=report_type,
-        named_people=final_people,
-        passes=passes,
-        removed_candidates=removed_candidates,
-        final_reasons=final_reasons,
+        named_people=v2.final_people,
+        passes=v2.passes,
+        removed_candidates=v2.removed_candidates,
+        final_reasons=v2.final_reasons,
         model_calls=call_stats.model_calls,
         repair_calls=call_stats.repair_calls,
-        elapsed_seconds=elapsed,
+        elapsed_seconds=v2.elapsed_seconds,
         classify=classify_record or {},
     )
 

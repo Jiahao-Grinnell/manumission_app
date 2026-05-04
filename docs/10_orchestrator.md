@@ -2,29 +2,37 @@
 
 > Pipeline orchestrator. Connects modules 02 through 09 into an end-to-end pipeline, tracks per-page progress, and supports resume.
 
-Implementation status as of 2026-04-24: standalone dashboard, persistent `job.json` store, `pipeline.log`, `events.jsonl`, background execution, server-rendered initial job state, live SSE updates with polling fallback, visible dashboard connection/error status, stale-job coercion from `running` to `paused` after restart or lost worker thread, `POST /orchestrate/run`, `POST /orchestrate/resume/<doc_id>`, `POST /orchestrate/cancel/<job_id>`, `GET /orchestrate/status/<job_id>`, `GET /orchestrate/stream/<job_id>`, artifact inspection, and unit tests are implemented in `src/orchestrator/`. The current runtime is standalone `ORCH_MODE=inproc`; HTTP dispatch and main `web_app` integration remain future Phase 6 work.
+Implementation status as of 2026-05-04: standalone dashboard, persistent `job.json` store, `pipeline.log`, `events.jsonl`, background execution, server-rendered initial job state, live SSE updates with polling fallback, visible dashboard connection/error status, stale-job coercion from `running` to `paused` after restart or lost worker thread, combined in-memory ingest+OCR for orchestrator runs, `POST /orchestrate/run`, `POST /orchestrate/resume/<doc_id>`, `POST /orchestrate/cancel/<job_id>`, `GET /orchestrate/status/<job_id>`, `GET /orchestrate/stream/<job_id>`, artifact inspection, and unit tests are implemented in `src/orchestrator/`. The current runtime is standalone `ORCH_MODE=inproc`; HTTP dispatch and main `web_app` integration remain future Phase 6 work.
 
 ## 1. Purpose
 
 The earlier modules can each work on their own, but **working individually** is not the same as **a working full pipeline**. This module is responsible for:
 
-1. For a given `doc_id`, triggering stages 02 -> 03 -> 04 -> 05 -> 06 -> 07 -> 09 in order.
-2. Persisting **page-granular status** so the dashboard can show which page is in which stage, even though the current pipeline executes stage-by-stage across the document.
+1. For a given `doc_id`, triggering combined PDF render + OCR, then stages 04 -> 05 -> 06 -> 07 -> 09 in order.
+2. Persisting **page-granular status** so the dashboard can show which page is in which stage. The ingest and OCR cells are still visible separately, but orchestrator production runs now process them as one streaming step: render one PDF page in memory, OCR it immediately, write `pNNN.txt`, then move on.
 3. Persisting state to `data/logs/<doc_id>/job.json` so a restarted process can resume.
 4. Idempotency: stages with existing artifacts are skipped.
 5. Treating intermediate artifacts, especially OCR text and per-page JSON, as first-class state visible in the dashboard.
 6. Providing real-time status and log streams to the standalone orchestrator dashboard now, and later to `web_app`.
-7. Avoiding business logic. All processing is performed by modules 02 through 09; the orchestrator only schedules.
+7. Avoiding business logic. All extraction decisions stay inside modules 04 through 09; the orchestrator only schedules and uses an in-memory render bridge for OCR efficiency.
 
 ## 2. Input / Output
 
-**Input**: `data/input_pdfs/<doc_id>.pdf`, an uploaded PDF passed to `POST /orchestrate/run`, or an already-ingested `data/pages/<doc_id>/` directory.
+**Input**: `data/input_pdfs/<doc_id>.pdf`, an uploaded PDF passed to `POST /orchestrate/run`, or existing OCR text under `data/ocr_text/<doc_id>/` when resuming without a source PDF.
 
 **Output**: final `data/output/<doc_id>/*.csv` files. These are written by the aggregator; the orchestrator only triggers it.
 
-**Intermediate artifacts**: `data/logs/<doc_id>/`
+**Intermediate artifacts**: orchestrator runs persist OCR text and logs:
 
 ```text
+data/ocr_text/<doc_id>/
+|-- p001.txt
+|-- p002.txt
+`-- manifest.json       # combined ingest+OCR manifest; image_storage=not_persisted
+```
+
+```text
+data/logs/<doc_id>/
 |-- job.json           # Current job state
 |-- pipeline.log       # Human-readable log
 `-- events.jsonl       # Event stream consumed by dashboard SSE
@@ -78,8 +86,7 @@ Principle: the filesystem is the source of truth. Every time the orchestrator de
 ```python
 def run_document(doc_id: str, resume: bool = True) -> Job:
     job = load_or_create_job(doc_id)
-    run_ingest(job, doc_id)
-    run_ocr_stage(job, doc_id)
+    run_ingest_ocr(job, doc_id)
     run_classify_stage(job, doc_id)
     propagate_classify_skips(job, doc_id)
     run_names_stage(job, doc_id)
@@ -92,11 +99,15 @@ def run_document(doc_id: str, resume: bool = True) -> Job:
 
 The current implementation is intentionally simpler than the original design sketch:
 
-1. It runs **stage-by-stage across the document**, not page-interleaved scheduling.
+1. It runs **stage-by-stage across the document** after OCR, but ingest+OCR itself is page-streamed so a page image does not need to be saved before OCR starts.
 2. `metadata_extractor` and `place_extractor` run as separate sequential stages.
 3. The dashboard still shows **page-level live progress**, because each stage updates page cells as work completes.
 
 Module communication is still abstracted behind `router.py`, but the current Phase 5 implementation only uses **direct in-process dispatch**. HTTP dispatch is deferred until the main `web_app` / multi-service integration phase.
+
+The router still exposes separate `ingest` and `ocr` dispatch branches for the standalone module UIs and debugging workflows. The orchestrator's `run_document()` path calls `ingest_ocr`, implemented in `src/orchestrator/ingest_ocr.py`, which uses PyMuPDF to render a page in memory and `modules.ocr.core.ocr_image_bgr()` to OCR that in-memory image. New orchestrator runs do not create `data/pages/<doc_id>/pNNN.png`; old page images may remain only from previous standalone ingest/debug runs.
+
+The names stage calls `modules.name_extractor.core.run_folder` through `src/orchestrator/router.py`. Therefore, name-extractor implementation changes are picked up by orchestrator runs after rebuilding/restarting the orchestrator container or local process. With `resume=true`, already-written `pNNN.names.json` artifacts are reused; clear or rerun names artifacts when you need regenerated V2 outputs.
 
 ```python
 # orchestrator/router.py
@@ -112,6 +123,7 @@ def call_module(name: str, payload: dict):
 src/orchestrator/
 |-- __init__.py
 |-- standalone.py        # Standalone Flask entry point on :5110
+|-- ingest_ocr.py        # In-memory PDF page render + OCR bridge for orchestrator runs
 |-- pipeline.py          # run_document and stage runners
 |-- job_store.py         # load_job / save_job, JSON files with atomic writes
 |-- router.py            # inproc dispatch abstraction
@@ -195,7 +207,7 @@ Visualization goals:
 2. **Per-page stage grid** makes stuck pages obvious.
 3. **Server-rendered first paint** means the current job summary, per-page table, and live log tail are visible immediately on page load before any client refresh code runs.
 4. **Clickable rows/cells** jump to the corresponding standalone module UI with the page preselected.
-5. **Artifact panel** shows the actual files behind a page, including `pNNN.png`, `pNNN.txt`, and each JSON file.
+5. **Artifact panel** shows the actual files behind a page, including OCR text and each JSON file. Page PNGs appear only if they were produced by the standalone ingest/debug workflow; production orchestrator runs do not save them.
 6. **Unified status colors**: done / running / queued / skipped / failed.
 7. **Live refresh with fallback** uses SSE when available and polling when SSE is interrupted, so the page does not depend on one transport.
 8. **Visible client status and error state** make it obvious whether the dashboard is currently connected, retrying, or using fallback refresh.
@@ -252,7 +264,7 @@ Still recommended as manual verification:
 ## 11. Build Checklist
 
 - [x] `job_store` writes atomically.
-- [x] `run_document` connects ingest, OCR, classify, names, metadata, places, and aggregate.
+- [x] `run_document` connects streaming ingest+OCR, classify, names, metadata, places, and aggregate.
 - [x] `router.py` supports current `inproc` dispatch.
 - [x] `events.jsonl` and the SSE live-update channel work.
 - [x] Idempotency skips each stage based on artifact existence.

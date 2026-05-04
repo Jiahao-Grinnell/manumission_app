@@ -24,7 +24,7 @@ class FakeClient:
     def generate_json(self, prompt: str, schema_hint: str, stats, *, num_predict: int | None = None):  # noqa: ANN001
         stats.model_calls += 1
         if not self.responses:
-            raise AssertionError("No fake response configured")
+            return {"labels": []}
         return self.responses.pop(0)
 
     def wait_ready(self, timeout_s: int = 240) -> None:
@@ -35,34 +35,38 @@ class CoreTests(unittest.TestCase):
     def test_extract_names_records_model_stage_removals(self) -> None:
         client = FakeClient(
             [
-                {"named_people": [{"name": "Mariam bint Yusuf", "evidence": "Statement of slave Mariam bint Yusuf"}, {"name": "Rashid bin Hamad", "evidence": "sold to one Rashid bin Hamad"}]},
-                {"named_people": [{"name": "Mariam bint Yusuf", "evidence": "Statement of slave Mariam bint Yusuf"}]},
-                {"named_people": [{"name": "Ahmad bin Said", "evidence": "Ahmad bin Said requests repatriation"}]},
-                {"named_people": [{"name": "Ahmad bin Said", "evidence": "Ahmad bin Said requests repatriation"}]},
-                {"named_people": [{"name": "Mariam bint Yusuf", "evidence": "Statement of slave Mariam bint Yusuf"}, {"name": "Ahmad bin Said", "evidence": "Ahmad bin Said requests repatriation"}]},
+                {"names": [{"name": "Mariam bint Yusuf", "span_quote": "Statement of slave Mariam bint Yusuf"}, {"name": "Rashid bin Hamad", "span_quote": "sold to one Rashid bin Hamad"}]},
+                {
+                    "labels": [
+                        {"candidate_id": "cand_001", "role": "enslaved_subject", "confidence": "high", "evidence_quote": "Statement of slave Mariam bint Yusuf"},
+                        {"candidate_id": "cand_002", "role": "buyer", "confidence": "high", "evidence_quote": "sold to one Rashid bin Hamad"},
+                    ]
+                },
             ]
         )
         result = extract_names(_fixture("single_subject.txt"), report_type="statement", client=client)
         self.assertEqual([item["name"] for item in result.named_people], ["Mariam bint Yusuf"])
-        self.assertTrue(any(item["name"] == "Rashid bin Hamad" and item["stage"] == "pass1_filter" for item in result.removed_candidates))
-        self.assertEqual(result.model_calls, 5)
+        self.assertTrue(any(item["name"] == "Rashid bin Hamad" and item["stage"] == "decision" for item in result.removed_candidates))
+        self.assertEqual(result.model_calls, 2)
 
     def test_rule_filter_removes_owner_when_verify_keeps_it(self) -> None:
         client = FakeClient(
             [
-                {"named_people": [{"name": "Mariam bint Yusuf", "evidence": "Statement of slave Mariam bint Yusuf"}, {"name": "Rashid bin Hamad", "evidence": "sold to one Rashid bin Hamad"}]},
-                {"named_people": [{"name": "Mariam bint Yusuf", "evidence": "Statement of slave Mariam bint Yusuf"}, {"name": "Rashid bin Hamad", "evidence": "sold to one Rashid bin Hamad"}]},
-                {"named_people": []},
-                {"named_people": []},
-                {"named_people": [{"name": "Mariam bint Yusuf", "evidence": "Statement of slave Mariam bint Yusuf"}, {"name": "Rashid bin Hamad", "evidence": "sold to one Rashid bin Hamad"}]},
+                {"names": [{"name": "Mariam bint Yusuf", "span_quote": "Statement of slave Mariam bint Yusuf"}, {"name": "Rashid bin Hamad", "span_quote": "sold to one Rashid bin Hamad"}]},
+                {
+                    "labels": [
+                        {"candidate_id": "cand_001", "role": "enslaved_subject", "confidence": "high", "evidence_quote": "Statement of slave Mariam bint Yusuf"},
+                        {"candidate_id": "cand_002", "role": "buyer", "confidence": "high", "evidence_quote": "sold to one Rashid bin Hamad"},
+                    ]
+                },
             ]
         )
         result = extract_names(_fixture("owner_vs_slave.txt"), report_type="statement", client=client)
         self.assertEqual([item["name"] for item in result.named_people], ["Mariam bint Yusuf"])
-        self.assertTrue(any(item["name"] == "Rashid bin Hamad" and item["stage"] == "rule_filter" for item in result.removed_candidates))
+        self.assertTrue(any(item["name"] == "Rashid bin Hamad" and item["stage"] == "decision" for item in result.removed_candidates))
 
     def test_rule_seed_candidates_are_included_in_final_rule_stage(self) -> None:
-        client = FakeClient([{"named_people": []}, {"named_people": []}, {"named_people": []}, {"named_people": []}, {"named_people": []}])
+        client = FakeClient([{"names": []}])
         result = extract_names(_fixture("sample2_p010_subject_list.txt"), report_type="correspondence", client=client)
         self.assertEqual(
             {item["name"] for item in result.named_people},
@@ -72,21 +76,13 @@ class CoreTests(unittest.TestCase):
     def test_final_rule_stage_reconsiders_merged_candidates_when_verify_drops_subject(self) -> None:
         client = FakeClient(
             [
+                {"names": [{"name": "Abdulla", "span_quote": "Abyssinian slave named Abdulla"}, {"name": "Abdulla's Wife", "span_quote": "married to a female slave of his"}]},
                 {
-                    "named_people": [
-                        {"name": "Abdulla", "evidence": "Abyssinian slave named Abdulla"},
-                        {"name": "Abdulla's Wife", "evidence": "married to a female slave of his"},
+                    "labels": [
+                        {"candidate_id": "cand_001", "role": "enslaved_subject", "confidence": "high", "evidence_quote": "Abyssinian slave named Abdulla"},
+                        {"candidate_id": "cand_002", "role": "family_member_only", "confidence": "medium", "evidence_quote": "married to a female slave of his"},
                     ]
                 },
-                {
-                    "named_people": [
-                        {"name": "Abdulla", "evidence": "Abyssinian slave named Abdulla"},
-                        {"name": "Abdulla's Wife", "evidence": "married to a female slave of his"},
-                    ]
-                },
-                {"named_people": [{"name": "Abdulla", "evidence": "slave named Abdulla"}]},
-                {"named_people": [{"name": "Abdulla", "evidence": "slave named Abdulla"}]},
-                {"named_people": [{"name": "Abdulla's Wife", "evidence": "married to a female slave of his"}]},
             ]
         )
         result = extract_names(_fixture("full_p012_abdulla_statement.txt"), report_type="statement", client=client)
@@ -107,11 +103,8 @@ class CoreTests(unittest.TestCase):
 
             first_client = FakeClient(
                 [
-                    {"named_people": [{"name": "Mariam bint Yusuf", "evidence": "Statement of slave Mariam bint Yusuf"}]},
-                    {"named_people": [{"name": "Mariam bint Yusuf", "evidence": "Statement of slave Mariam bint Yusuf"}]},
-                    {"named_people": [{"name": "Ahmad bin Said", "evidence": "Ahmad bin Said requests repatriation"}]},
-                    {"named_people": [{"name": "Ahmad bin Said", "evidence": "Ahmad bin Said requests repatriation"}]},
-                    {"named_people": [{"name": "Mariam bint Yusuf", "evidence": "Statement of slave Mariam bint Yusuf"}, {"name": "Ahmad bin Said", "evidence": "Ahmad bin Said requests repatriation"}]},
+                    {"names": [{"name": "Mariam bint Yusuf", "span_quote": "Statement of slave Mariam bint Yusuf"}]},
+                    {"labels": [{"candidate_id": "cand_001", "role": "enslaved_subject", "confidence": "high", "evidence_quote": "Statement of slave Mariam bint Yusuf"}]},
                 ]
             )
             out_path = inter_dir / "p001.names.json"
@@ -120,18 +113,19 @@ class CoreTests(unittest.TestCase):
 
             rerun_client = FakeClient(
                 [
-                    {"named_people": [{"name": "Mariam bint Yusuf", "evidence": "Statement of slave Mariam bint Yusuf"}]},
+                    {"names": [{"name": "Mariam bint Yusuf", "span_quote": "Statement of slave Mariam bint Yusuf"}]},
+                    {"labels": [{"candidate_id": "cand_001", "role": "enslaved_subject", "confidence": "high", "evidence_quote": "Statement of slave Mariam bint Yusuf"}]},
                 ]
             )
             rerun = rerun_pass_file(
                 in_dir / "p001.txt",
                 inter_dir / "p001.classify.json",
                 out_path,
-                "verify",
+                "role_label",
                 client=rerun_client,
             )
             self.assertEqual([item["name"] for item in rerun.named_people], ["Mariam bint Yusuf"])
-            self.assertEqual(rerun.model_calls, 1)
+            self.assertEqual(rerun.model_calls, 2)
 
     def test_run_folder_uses_only_extractable_pages(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -152,11 +146,8 @@ class CoreTests(unittest.TestCase):
             )
             client = FakeClient(
                 [
-                    {"named_people": [{"name": "Mariam bint Yusuf", "evidence": "Statement of slave Mariam bint Yusuf"}]},
-                    {"named_people": [{"name": "Mariam bint Yusuf", "evidence": "Statement of slave Mariam bint Yusuf"}]},
-                    {"named_people": []},
-                    {"named_people": []},
-                    {"named_people": [{"name": "Mariam bint Yusuf", "evidence": "Statement of slave Mariam bint Yusuf"}]},
+                    {"names": [{"name": "Mariam bint Yusuf", "span_quote": "Statement of slave Mariam bint Yusuf"}]},
+                    {"labels": [{"candidate_id": "cand_001", "role": "enslaved_subject", "confidence": "high", "evidence_quote": "Statement of slave Mariam bint Yusuf"}]},
                 ]
             )
             summary = run_folder(in_dir, inter_dir, inter_dir, client=client, wait_ready=False)

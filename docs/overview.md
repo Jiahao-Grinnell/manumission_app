@@ -4,8 +4,8 @@
 
 This is an end-to-end extraction system for **historical slavery and manumission archival documents**. Given a scanned PDF, the system should:
 
-1. Split the PDF into one image per page.
-2. Run OCR on each page image to obtain text.
+1. Obtain OCR text from each PDF page. Standalone debugging can split the PDF into saved page images first; orchestrator production runs render each page in memory and OCR it immediately.
+2. Persist one OCR text file per page.
 3. Use LLMs to extract from each page:
    - whether the page has any visible personal names, whether no-name pages should be skipped, and the report type
    - the **names of enslaved or manumitted subjects** mentioned on the page
@@ -30,7 +30,7 @@ Real production PDFs can be **larger than 500 MB**. The design must therefore tr
 
 - The Web UI may support browser upload, but it must also support registering a file already placed in `data/input_pdfs/`. For very large files, folder-based registration is safer than pushing the entire PDF through a Flask request.
 - Upload limits must be configurable and must not be hard-coded to 500 MB.
-- Ingest must render pages one at a time and never load the whole PDF into memory as images.
+- Ingest must render pages one at a time and never load the whole PDF into memory as images. In orchestrator runs, the rendered page image is passed directly to OCR and is not saved.
 - Every expensive stage must persist intermediate artifacts immediately so a crash or restart does not lose work.
 - Tests must include small samples for quick feedback and at least one full-size smoke run that validates resume behavior, disk usage, and dashboard performance.
 
@@ -57,9 +57,7 @@ Real production PDFs can be **larger than 500 MB**. The design must therefore tr
 
 ```text
 PDF file
-  -> 02 pdf_ingest
-     data/pages/<doc_id>/p001.png ...
-  -> 03 ocr
+  -> orchestrator ingest_ocr
      data/ocr_text/<doc_id>/p001.txt ...
   -> 04 page_classifier
      data/intermediate/<doc_id>/p001.classify.json
@@ -76,6 +74,16 @@ PDF file
        Detailed info.csv
        name place.csv
        run_status.csv
+```
+
+Standalone debug path:
+
+```text
+PDF file
+  -> 02 pdf_ingest
+     data/pages/<doc_id>/p001.png ...
+  -> 03 ocr
+     data/ocr_text/<doc_id>/p001.txt ...
 ```
 
 Supporting services:
@@ -181,7 +189,11 @@ llm-pipeline/
 |   |   |   |-- name_pass.txt
 |   |   |   |-- name_recall.txt
 |   |   |   |-- name_filter.txt
-|   |   |   `-- name_verify.txt
+|   |   |   |-- name_verify.txt
+|   |   |   `-- v2/
+|   |   |       |-- mention_scan.txt
+|   |   |       |-- role_label.txt
+|   |   |       `-- role_escalate.txt
 |   |   |-- metadata_extractor/
 |   |   |   |-- category_guide.txt
 |   |   |   `-- meta_pass.txt
@@ -213,7 +225,7 @@ llm-pipeline/
 |
 |-- data/                          # All runtime data
 |   |-- input_pdfs/                # User-provided PDFs, ignored by git
-|   |-- pages/<doc_id>/            # Split PNG pages from pdf_ingest
+|   |-- pages/<doc_id>/            # Split PNG pages from standalone pdf_ingest/debug runs
 |   |-- ocr_text/<doc_id>/         # Persisted OCR .txt outputs, one file per page
 |   |-- intermediate/<doc_id>/     # Persisted per-page JSON from classifier, names, meta, places
 |   |-- output/<doc_id>/           # Final CSV files
@@ -321,7 +333,7 @@ This is one of the key features of the refactor. Every processing module has a `
 | 02 pdf_ingest | PDF thumbnail grid, page count, dimensions, file size summary |
 | 03 ocr | Original image -> grayscale/enhanced -> deskew -> crop -> tiles; OCR text alignment; raw model response JSON |
 | 04 page_classifier | Full OCR text, classification badges, visible-name/skip hints, highlighted evidence, raw responses |
-| 05 name_extractor | Highlighted final and dropped names, five-stage cards with prompt/response inspection, removed-candidate reasons, rerun-stage controls |
+| 05 name_extractor | Highlighted final and dropped names, V2 span/context/role/decision stage cards, prompt/response inspection, removed-candidate reasons, rerun-stage controls |
 | 06 metadata_extractor | Field cards with paired evidence, OCR highlighting, validation statuses, and prompt/response inspection for one selected person |
 | 07 place_extractor | Ordered place path, highlighted evidence for each place, date-confidence blocks |
 | 08 normalizer | Enter arbitrary names, places, dates, or text and see normalized output plus matched rules |
@@ -340,7 +352,7 @@ Intermediate results are first-class outputs, not throwaway cache:
 | Artifact | Location | Why It Must Persist |
 |---|---|---|
 | PDF source | `data/input_pdfs/<doc_id>.pdf` | Allows reruns and audit of the exact source file |
-| Page images | `data/pages/<doc_id>/pNNN.png` | Avoids re-rendering large PDFs after OCR or LLM failures |
+| Page images | `data/pages/<doc_id>/pNNN.png` | Optional standalone ingest/debug artifact; orchestrator production runs do not save it |
 | OCR text | `data/ocr_text/<doc_id>/pNNN.txt` | Expensive to produce; must be inspectable and reused by every downstream module |
 | Classifier JSON | `data/intermediate/<doc_id>/pNNN.classify.json` | Decides whether downstream extraction should run |
 | Name JSON | `data/intermediate/<doc_id>/pNNN.names.json` | Stores pass-level extraction details and removed-candidate reasons |

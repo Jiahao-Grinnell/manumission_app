@@ -53,20 +53,22 @@ class PipelineMockedTests(unittest.TestCase):
             paths.pdf.write_bytes(b"%PDF-1.4 fake")
 
             def fake_run_stage(stage, doc_id, **kwargs):
-                if stage == "ingest":
-                    for page in (1, 2):
-                        image = paths.page_image(page)
-                        image.write_bytes(b"png")
-                        kwargs["progress"]("render", page, 2, image)
-                    manifest = {"doc_id": doc_id, "page_count": 2, "completed_pages": 2, "status": "complete"}
-                    write_json_atomic(paths.manifest(), manifest)
-                    return manifest
-                if stage == "ocr":
+                if stage == "ingest_ocr":
                     for page in (1, 2):
                         text = paths.ocr_text(page)
+                        kwargs["progress"]("render", page, 2, text)
                         text.write_text(f"ocr {page}", encoding="utf-8")
                         kwargs["progress"]("done", page, 2, text)
-                    return _stage_summary("txt", [(1, "done"), (2, "done")])
+                    return {
+                        "doc_id": doc_id,
+                        "page_count": 2,
+                        "total_pages": 2,
+                        "status": "complete",
+                        "pages": [
+                            {"page": 1, "status": "done", "text_file": "p001.txt"},
+                            {"page": 2, "status": "done", "text_file": "p002.txt"},
+                        ],
+                    }
                 if stage == "classify":
                     write_json_atomic(paths.classify(1), {"page": 1, "should_extract": True, "report_type": "statement"})
                     write_json_atomic(paths.classify(2), {"page": 2, "should_extract": False, "skip_reason": "index", "report_type": "correspondence"})
@@ -110,6 +112,7 @@ class PipelineMockedTests(unittest.TestCase):
             self.assertEqual(result["pages"][1]["places"]["state"], "skipped")
             self.assertEqual(result["pages"][1]["note"], "skip:index")
             self.assertEqual(result["aggregate"]["state"], "done")
+            self.assertFalse(paths.page_image(1).exists())
 
     def test_pipeline_pause_requested_stops_after_current_stage(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -140,23 +143,25 @@ class PipelineMockedTests(unittest.TestCase):
             paths.pdf.write_bytes(b"%PDF-1.4 fake")
 
             def fake_run_stage(stage, doc_id, **kwargs):
-                if stage == "ingest":
-                    for page in (1, 2):
-                        image = paths.page_image(page)
-                        image.write_bytes(b"png")
-                        kwargs["progress"]("render", page, 2, image)
-                    manifest = {"doc_id": doc_id, "page_count": 2, "completed_pages": 2, "status": "complete"}
-                    write_json_atomic(paths.manifest(), manifest)
-                    return manifest
-                if stage == "ocr":
+                if stage == "ingest_ocr":
                     for page in (1, 2):
                         text = paths.ocr_text(page)
+                        kwargs["progress"]("render", page, 2, text)
                         text.write_text(f"ocr {page}", encoding="utf-8")
                         kwargs["progress"]("done", page, 2, text)
                         if page == 1:
                             current = job_store.load_job("demo_pause")
                             job_store.request_pause(current)
-                    return _stage_summary("txt", [(1, "done"), (2, "done")])
+                    return {
+                        "doc_id": doc_id,
+                        "page_count": 2,
+                        "total_pages": 2,
+                        "status": "complete",
+                        "pages": [
+                            {"page": 1, "status": "done", "text_file": "p001.txt"},
+                            {"page": 2, "status": "done", "text_file": "p002.txt"},
+                        ],
+                    }
                 raise AssertionError(stage)
 
             with (

@@ -1,0 +1,54 @@
+Classify the role of each provided candidate using only the provided context bundle.
+
+Rules:
+- Use only the provided candidate_id values.
+- Do not add names.
+- Choose exactly one role per candidate.
+- evidence_quote must be a verbatim quote from the provided context.
+- If the context does not clearly establish the role, use "ambiguous".
+
+Positive roles:
+- enslaved_subject
+- refugee_slave
+- fugitive_slave
+- manumission_applicant
+- certificate_recipient
+- kidnapped_victim
+- recovered_person
+- repatriated_person
+- slave_status_investigation_subject
+- relation_subject
+
+Negative roles:
+- owner
+- master
+- buyer
+- seller
+- broker
+- kidnapper
+- witness
+- official
+- correspondent
+- signatory
+- papers_source
+- family_member_only
+- freeborn_not_slave
+- generic_unanchored
+
+Neutral role:
+- ambiguous
+
+Return JSON only:
+{
+  "labels": [
+    {
+      "candidate_id": string,
+      "role": string,
+      "confidence": "high" | "medium" | "low",
+      "evidence_quote": string
+    }
+  ]
+}
+
+PAYLOAD:
+<<<{role_payload_json}>>>

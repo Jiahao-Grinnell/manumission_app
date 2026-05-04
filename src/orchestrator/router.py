@@ -13,6 +13,8 @@ from modules.place_extractor.core import run_folder as run_places_folder
 from shared.config import settings
 from shared.paths import doc_paths
 
+from .ingest_ocr import run_ingest_ocr
+
 
 ProgressCallback = Callable[[str, int, int, Path], None]
 
@@ -47,6 +49,18 @@ def run_stage(
         return run_ocr_folder(
             paths.pages_dir,
             paths.ocr_dir,
+            model=ocr_model,
+            resume=resume,
+            progress=progress,
+        )
+    if stage == "ingest_ocr":
+        if source_pdf is None:
+            raise FileNotFoundError(f"No PDF source provided for combined ingest+OCR of {doc_id}")
+        return run_ingest_ocr(
+            source_pdf,
+            paths.ocr_dir,
+            dpi=dpi,
+            doc_id=doc_id,
             model=ocr_model,
             resume=resume,
             progress=progress,

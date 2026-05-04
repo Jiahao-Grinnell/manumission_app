@@ -1,17 +1,17 @@
 # Module 05 - name_extractor
 
-> Extract all named enslaved or manumission subjects from one OCR page, keep the full five-stage decision trail, and explain every dropped candidate.
+> Extract current-page enslaved/manumission subject names with OCR-grounded candidates, context-bundled role labeling, deterministic scoring, and a full audit trail.
 
 ## 1. Purpose
 
-Given one page of OCR text plus its `page_classifier` decision, produce the list of named people who are themselves the subject group on that page.
+Given one OCR page plus its `page_classifier` result, produce the list of people or anchored relation labels who are themselves the subject group on that page.
 
 Subject definition:
 
-- Include: enslaved person, refugee slave, fugitive slave, manumission applicant, certificate recipient, recommended subject, and clearly named family members included in that same subject group.
-- Exclude: owner, buyer, seller, master, sheikh, captain, clerk, witness, correspondent, signatory, and free person.
+- Include: enslaved person, refugee slave, fugitive slave, manumission applicant, certificate recipient, kidnapped/recovered/repatriated victim, slave-status investigation subject, and anchored relation-labeled subjects such as `Salem's sister` when that relation person is the subject.
+- Exclude: owner, buyer, seller, master, broker, trafficker, kidnapper, witness, official, correspondent, signatory, papers source, freeborn-not-slave person, and unanchored generic labels.
 
-This boundary is context-sensitive, so the module uses multiple LLM stages plus a final Python rule filter.
+The module treats each page independently. It does not inherit names from previous or following pages.
 
 ## 2. Input / Output
 
@@ -19,20 +19,13 @@ This boundary is context-sensitive, so the module uses multiple LLM stages plus 
 
 - `data/ocr_text/<doc_id>/pNNN.txt`
 - `data/intermediate/<doc_id>/pNNN.classify.json`
-- Only runs when `should_extract=true`; classifier-kept pages may contain any visible personal name, so this module is responsible for filtering down to actual enslaved/manumission subjects.
-
-Discovery rules for the standalone UI:
-
-- the document dropdown is populated from `data/ocr_text/<doc_id>/`
-- a document is shown only if at least one page also has `data/intermediate/<doc_id>/pNNN.classify.json` with `should_extract=true`
-- pages with missing classifier output or `should_extract=false` are hidden from the `name_extractor` UI
-- if a document is missing from the UI, run `page_classifier` on the whole document first
+- Only pages with `should_extract=true` are processed.
 
 **Output**
 
 - `data/intermediate/<doc_id>/pNNN.names.json`
 
-Stored shape:
+The public output shape remains compatible with downstream modules:
 
 ```json
 {
@@ -44,119 +37,141 @@ Stored shape:
     "evidence": "Statement of slave Mariam bint Yusuf"
   },
   "named_people": [
-    {"name": "Ahmad bin Said", "evidence": "Ahmad bin Said requests repatriation"},
     {"name": "Mariam bint Yusuf", "evidence": "Statement of slave Mariam bint Yusuf"}
   ],
   "passes": {
-    "pass1": {
-      "label": "Pass 1 raw",
-      "prompt_name": "name_pass.txt",
-      "input_candidates": [],
-      "candidates": [...]
-    },
-    "pass1_filter": {
-      "label": "Pass 1 filter",
-      "input_candidates": [...],
-      "llm_candidates": [...],
-      "candidates": [...],
-      "fallback_applied": false,
-      "removed": [...]
-    },
-    "recall": {...},
-    "recall_filter": {...},
-    "merged": {...},
-    "verify": {...},
-    "rule_filter": {
-      "candidates": [...],
-      "removed": [...],
-      "kept_reasons": [...]
-    }
+    "candidate_mining": {"candidates": []},
+    "span_gate": {"candidates": [], "removed": []},
+    "context_bundle": {"candidates": []},
+    "role_label": {"candidates": []},
+    "decision": {"candidates": [], "removed": []},
+    "review_queue": {"candidates": []}
   },
-  "removed_candidates": [
-    {
-      "name": "Sheikh Rashid",
-      "stage": "rule_filter",
-      "reason_type": "negative_rule",
-      "reason": "matched \"sold to {name}\""
-    }
-  ],
-  "final_reasons": [
-    {
-      "name": "Mariam bint Yusuf",
-      "stage": "rule_filter",
-      "reason_type": "positive_rule",
-      "reason": "matched \"statement of {name}\""
-    }
-  ],
-  "model_calls": 5,
+  "removed_candidates": [],
+  "final_reasons": [],
+  "model_calls": 2,
   "repair_calls": 0,
-  "elapsed_seconds": 18.7
+  "elapsed_seconds": 4.2
 }
 ```
 
-The debugging requirement is intentional: every stage is persisted, and every removal is attributable.
+The `named_people[]` contract is unchanged for `metadata_extractor`, `place_extractor`, `aggregator`, and `orchestrator`.
 
-## 3. Prompt Files
+## 3. Core Pipeline
 
-Prompt text is no longer embedded in Python constants. The module loads from:
-
-```text
-config/prompts/name_extractor/
-|-- name_pass.txt
-|-- name_recall.txt
-|-- name_filter.txt
-`-- name_verify.txt
-```
-
-This keeps prompt tuning separate from code changes and makes `rerun-pass` debugging easier.
-
-## 4. Core Pipeline
-
-Implemented pipeline:
+Implemented V2.1 pipeline:
 
 ```text
-pass1 raw
-  -> pass1_filter
-recall raw
-  -> recall_filter
-merge(pass1_filter, recall_filter)
-  -> verify
-  -> rule_filter
+OCR + classify.json
+  -> segments
+  -> mention_scan
+  -> candidate_mining
+  -> span_gate
+  -> merge
+  -> context_bundle
+  -> role_label
+  -> escalation
+  -> deterministic_signals
+  -> decision
+  -> review_queue
 ```
 
-Important details:
+Key behavior:
 
-- Baseline cost is five LLM calls: `pass1`, `pass1_filter`, `recall`, `recall_filter`, `verify`.
-- `merged` and `rule_filter` are pure Python.
-- Before the final Python rule filter, deterministic seed candidates are added from high-confidence page patterns such as `certain Surur negro who claims...` and numbered lists after `slaves whose names are`.
-- JSON repair retries may add more model calls.
-- The filter prompt is reused twice, once for `pass1_filter` and once for `recall_filter`.
-- If a filter or verify stage returns an empty list, the module transparently falls back to the upstream candidates and records that fallback in the stored stage payload.
+- `candidate_mining` unions deterministic OCR patterns with a recall-only Mistral mention scan.
+- `span_gate` requires every final candidate to be locatable in the current OCR page.
+- LLM-provided quotes and role evidence must validate against OCR/context text; model evidence cannot prove a name exists.
+- `context_bundle` preserves governing same-page context, such as subject-list introductions, numbered case segments, nearby paragraph context, and relation-label context.
+- `role_label` asks Mistral to classify fixed candidate IDs into fixed role enums. It cannot add new names.
+- `decision` combines deterministic signals and model role labels into a scored keep/drop/review decision.
+- Ambiguous candidates stay in `passes.review_queue` and are excluded from final CSVs.
 
-## 5. Rule Layer
+Legacy stage names such as `pass1`, `recall`, and `verify` may still be accepted as rerun aliases, but the default stored pipeline is V2.1.
 
-The final rule layer exists so the module can explain late removals instead of only returning a black-box final list.
+## 4. Prompt Files
 
-Implemented checks:
+Current V2 prompts live under:
 
-- `ROLE_POSITIVE_PATTERNS`: `statement of {name}`, `slave {name}`, `negro {name}`, `case of the negro {name}`, `certain {name} negro ... slave`, `slaves whose names are ... {name}`, `refugee slaves ... {name}`, `grant certificate ... to {name}`, `{name} requests repatriation`
-- `ROLE_NEGATIVE_PATTERNS`: `sold to {name}`, `bought by {name}`, `belonging to {name}`, `statement recorded by {name}`, `letter from {name}`
-- final candidates must be present in the current page OCR; model-provided evidence can explain a candidate but cannot prove the name exists
-- positive and negative role rules run only on OCR contexts around the name, not on LLM-generated evidence text
-- official-title context detection, narrowed to direct title-before-name forms such as `Captain X` rather than any nearby official title in the page window
-- `free born` plus `not a slave`
-- generic subject phrase rejection for unnamed labels such as `The Slave`, `the negro`, or `this man`
-- basic name validation using the shared normalizer, without bypassing stopword rejection for two-word generic phrases
+```text
+config/prompts/name_extractor/v2/
+|-- mention_scan.txt
+|-- role_label.txt
+`-- role_escalate.txt
+```
 
-This OCR-presence gate prevents full-PDF false positives where the recall pass invents a name and attaches plausible-looking evidence such as `the following refugee slaves: Mubarak` even though the name is absent from the page.
+Older prompt files remain in `config/prompts/name_extractor/` for compatibility and comparison, but the default implementation uses the V2 prompt folder.
 
-The merge step imports shared logic from `modules.normalizer.names` so name comparison heuristics stay consistent across modules.
+## 5. Candidate And Context Rules
 
-## 6. Rerun Semantics
+Candidate sources include:
+
+- direct subject patterns such as `slave named X`, `negro by name X`, `Statement of X`, `Name. X`, and `certain X negro`
+- subject lists such as `slaves whose names are` and `following refugee slaves`
+- numbered memorandum case names
+- anchored relation labels such as `Salem's sister`, `son of Salem`, and `wife of Abdulla`
+
+Generic unanchored phrases are rejected:
+
+- `the slave`
+- `his sister`
+- `three slaves`
+- `a number of slaves`
+- `three females with two children`
+
+Context bundles prevent false negatives where the name itself is far from the governing subject signal. Examples:
+
+- names listed below `slaves whose names are`
+- victims in numbered memorandum case segments
+- relation subjects whose sale/kidnapping context appears in the next sentence
+- certificate-delivery lines where the action appears above the names
+
+## 6. Decision Layer
+
+The final decision is deterministic and audit-friendly.
+
+Positive signals include:
+
+- clear model subject role with validated evidence
+- strong deterministic subject regex
+- validated subject-list context
+- validated numbered-case subject context
+- direct relation-subject context
+
+Negative signals include:
+
+- buyer, seller, owner, master, broker, witness, official, correspondent, signatory
+- `papers from X`
+- `letter from X`
+- `statement recorded by X`
+- freeborn/not-slave evidence
+- invalid model evidence quote
+
+Default thresholds:
+
+```text
+score >= 2.5  -> keep
+score <= -1.0 -> drop
+otherwise     -> review_queue
+```
+
+Hard negative plus strong positive defaults to review instead of final output. The final CSV prioritizes precision.
+
+## 7. Rerun Semantics
 
 `POST /names/rerun-pass/<doc_id>/<page>/<pass_name>`
 
-Allowed `pass_name` values:
+Primary V2 stage names:
+
+- `mention_scan`
+- `candidate_mining`
+- `span_gate`
+- `merge`
+- `context_bundle`
+- `role_label`
+- `escalation`
+- `decision`
+
+Legacy aliases still accepted:
 
 - `pass1`
 - `pass1_filter`
@@ -164,60 +179,29 @@ Allowed `pass_name` values:
 - `recall_filter`
 - `verify`
 
-Semantics:
+The current implementation recomputes the V2 page pipeline while preserving the same endpoint and stored `pNNN.names.json` shape.
 
-- rerun the requested stage
-- reuse unaffected upstream stages from the stored `pNNN.names.json`
-- recompute every downstream stage
-- overwrite the existing `pNNN.names.json`
+## 8. UI
 
-Examples:
+The standalone UI is for prompt/debug review, not just final preview.
 
-- rerun `verify`: reuse `pass1_filter`, `recall_filter`, and `merged`; recompute `verify` and `rule_filter`
-- rerun `recall_filter`: reuse `pass1` and `pass1_filter`; recompute `recall_filter`, `merged`, `verify`, and `rule_filter`
+Implemented UI features:
 
-## 7. Directory Structure
+- document/page selector restricted to classifier-kept pages
+- full OCR text with final and dropped names highlighted separately
+- final names and dropped-candidate tables
+- stage cards for V2 pipeline artifacts
+- prompt and parsed response inspection for model stages
+- decision score and signal trail in stage payloads
+- rerun-stage control
+
+The initial page payload is stored in a JSON script tag and parsed by JavaScript, avoiding direct Jinja JSON interpolation inside a JS assignment.
+
+URL:
 
 ```text
-src/modules/name_extractor/
-|-- __init__.py
-|-- blueprint.py
-|-- cli.py
-|-- core.py
-|-- merging.py
-|-- passes.py
-|-- rules.py
-|-- standalone.py
-|-- static/
-|   `-- name_extractor.css
-|-- templates/
-|   `-- ui.html
-`-- tests/
-    |-- fixtures/
-    |   |-- freeborn_page.txt
-    |   |-- grouped_list.txt
-    |   |-- admin_forwarding_p279.txt
-    |   |-- owner_vs_slave.txt
-    |   |-- sample1_p011_abdulla.txt
-    |   |-- sample2_p010_subject_list.txt
-    |   |-- sample2_p014_generic_slave.txt
-    |   `-- single_subject.txt
-    |-- test_core.py
-    `-- test_rules.py
+http://127.0.0.1:5105/names/
 ```
-
-## 8. Blueprint API
-
-| Method | Path | Behavior |
-|---|---|---|
-| GET | `/names/` | Standalone UI |
-| GET | `/names/docs` | Docs with at least one extractable page |
-| GET | `/names/pages/<doc_id>` | Extractable pages only |
-| POST | `/names/run-single/<doc_id>/<page>` | Run one page |
-| POST | `/names/run-all/<doc_id>` | Whole-document background job |
-| GET | `/names/result/<doc_id>/<page>` | Existing result payload |
-| POST | `/names/rerun-pass/<doc_id>/<page>/<pass_name>` | Rerun one stage and downstream |
-| GET | `/names/jobs/<job_id>` | Poll background job |
 
 ## 9. CLI
 
@@ -228,7 +212,7 @@ python -m modules.name_extractor.cli \
   --in_dir /data/ocr_text/myDoc \
   --classify_dir /data/intermediate/myDoc \
   --out_dir /data/intermediate/myDoc \
-  --model qwen2.5:14b-instruct
+  --model mistral-small3.1:latest
 ```
 
 Single page:
@@ -249,40 +233,10 @@ python -m modules.name_extractor.cli \
   --classify_dir /data/intermediate/myDoc \
   --out_dir /data/intermediate/myDoc \
   --page 12 \
-  --rerun-pass verify
+  --rerun-pass role_label
 ```
 
-## 10. UI
-
-The standalone UI is meant for prompt/debug work, not just final preview.
-
-Implemented UI features:
-
-- document/page selector restricted to extractable pages
-- document list discovered from `data/ocr_text/` and filtered by classifier output, not entered manually
-- full OCR text with final names highlighted separately from dropped names
-- summary metrics for final names, dropped names, model calls, repair calls, elapsed time, and classifier evidence
-- one card per stage showing input/output counts, removed counts, fallback notes, parsed response JSON, and rendered prompt text
-- final table of kept names and evidence
-- dropped-candidate table with stage, reason, and excerpt
-- rerun-stage control
-
-URL:
-
-```text
-http://127.0.0.1:5105/names/
-```
-
-If a known OCR document does not appear in the dropdown, check these files first:
-
-```text
-data/ocr_text/<doc_id>/pNNN.txt
-data/intermediate/<doc_id>/pNNN.classify.json
-```
-
-The most common cause is that the classifier has only written metadata/index skips so far, which means there are still zero extractable pages for `name_extractor` to show.
-
-## 11. Docker
+## 10. Docker
 
 Uses the shared `docker/ner.Dockerfile` and is exposed through `compose.yaml` as:
 
@@ -290,38 +244,33 @@ Uses the shared `docker/ner.Dockerfile` and is exposed through `compose.yaml` as
 - profile: `names`
 - port: `127.0.0.1:5105`
 
+## 11. Orchestrator Compatibility
+
+The orchestrator names stage imports `modules.name_extractor.core.run_folder` directly through `src/orchestrator/router.py`.
+
+That means:
+
+- In in-process orchestrator mode, the names stage uses the updated name extractor code after the orchestrator image/container is rebuilt or restarted.
+- Existing `pNNN.names.json` artifacts are still reused when `resume=true`; rerun or clear stale names artifacts if you want V2.1 outputs for already-completed pages.
+- Downstream metadata, places, and aggregation continue to read the same `named_people[]` shape.
+
 ## 12. Tests
 
-Deterministic unit and mocked-integration tests:
+Current regression coverage includes:
 
-- positive subject rule detection
-- negative-role rule detection
-- `free born / not a slave` removal
-- numbered subject-list recall for `slaves whose names are`
-- generic phrase rejection for `The Slave`
-- regression coverage for `case of the negro Abdulla` not being removed by official-title context
-- model-stage removal tracking
-- rule-stage removal tracking
-- `rerun-pass` reusing upstream stored stages
-- whole-folder run limited to `should_extract=true` pages
+- candidate span validation
+- subject-list governing context
+- relation-label expanded same-page context
+- invalid model role evidence handling
+- owner/buyer/witness removal
+- generic phrase rejection
+- full-input regression fixtures
+- downstream compatibility with normalizer, metadata, and place extractor tests
 
 Run:
 
 ```bash
-docker build -f docker/ner.Dockerfile -t manumission-ner:phase4_2 .
-docker run --rm manumission-ner:phase4_2 python -m unittest discover -s /app/modules/name_extractor/tests -p "test_*.py"
-docker compose --profile names up -d --build name_extractor
-curl http://127.0.0.1:5105/healthz
+docker build -f docker/ner.Dockerfile -t manumission-ner:local .
+docker run --rm manumission-ner:local python -m unittest discover -s /app/modules/name_extractor/tests -p "test_*.py"
+docker run --rm manumission-ner:local python -m unittest modules.name_extractor.tests.test_rules modules.name_extractor.tests.test_core modules.name_extractor.tests.test_v2 modules.normalizer.tests.test_names modules.metadata_extractor.tests.test_core modules.place_extractor.tests.test_core
 ```
-
-## 13. Performance
-
-Expect a slower first request when the text model is not already loaded in Ollama.
-
-Typical per-page behavior:
-
-- first call can spend noticeable time loading the model
-- warm calls are faster while the model stays resident
-- total stage cost is still dominated by the five LLM calls
-
-The current implementation optimizes for debuggability and determinism, not minimum latency.

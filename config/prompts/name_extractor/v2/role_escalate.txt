@@ -1,0 +1,23 @@
+Re-check this hard-case role classification using only the provided context bundle.
+
+Rules:
+- Use only the provided candidate_id values.
+- Do not add names.
+- Choose exactly one allowed role per candidate.
+- Prefer "ambiguous" if the context still does not clearly establish the role.
+- evidence_quote must be a verbatim quote from the provided context.
+
+Return JSON only:
+{
+  "labels": [
+    {
+      "candidate_id": string,
+      "role": string,
+      "confidence": "high" | "medium" | "low",
+      "evidence_quote": string
+    }
+  ]
+}
+
+PAYLOAD:
+<<<{role_payload_json}>>>

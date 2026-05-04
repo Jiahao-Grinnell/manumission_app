@@ -10,7 +10,7 @@ This document explains **the order for building the system**, what each step sho
 4. **Build test UI together with core logic**: do not write core logic first and come back later for the UI. Ship them together.
 5. **Use Docker from day one**: do not run bare scripts first and containerize at the end. The first module should already run in Docker.
 6. **Treat large PDFs as normal input**: real files may exceed 500 MB, so support both browser upload and registering files already placed in `data/input_pdfs/`.
-7. **Persist important intermediate artifacts**: page images, OCR text, per-page JSON, logs, and final CSVs must all be durable, visible in the UI, and usable for resume.
+7. **Persist important intermediate artifacts**: OCR text, per-page JSON, logs, and final CSVs must be durable, visible in the UI, and usable for resume. Standalone ingest/debug runs may persist page images; orchestrator production runs render pages in memory and save only OCR text.
 
 ---
 
@@ -75,7 +75,7 @@ This module is the Ollama container itself plus documented usage of `OllamaClien
 Verification:
 
 ```bash
-./scripts/seed_model.sh qwen2.5:14b-instruct
+./scripts/seed_model.sh mistral-small3.1:latest
 docker compose up -d ollama
 # Verify internal reachability and host isolation.
 docker run --rm --network manumission_app_llm_internal curlimages/curl http://ollama:11434/api/version
@@ -222,7 +222,7 @@ Then open the OCR UI, click a page, and visually inspect preprocessing artifacts
 
 For large inputs, verify that stopping and restarting OCR skips existing `pNNN.txt` files and does not delete successful OCR text.
 
-Milestone M3: the pipeline can run from PDF to OCR text.
+Milestone M3: the pipeline can run from PDF to OCR text. Standalone module workflows may go through saved page images; orchestrator workflows can render directly into OCR without storing those images.
 
 ---
 
@@ -257,29 +257,33 @@ curl http://127.0.0.1:5104/healthz
 
 ### 4.2 Module 05: name_extractor
 
-Implemented on 2026-04-21 with the inherited five-call baseline:
+Implemented on 2026-04-21 with the inherited five-call baseline, then upgraded to the V2.1 span-grounded pipeline:
 
-- `pass1` raw extraction
-- `pass1_filter`
-- `recall` raw extraction
-- `recall_filter`
-- `merged` fuzzy dedupe
-- `verify`
-- `rule_filter`
+- `segments`
+- `mention_scan`
+- `candidate_mining`
+- `span_gate`
+- `merge`
+- `context_bundle`
+- `role_label`
+- `escalation`
+- `deterministic_signals`
+- `decision`
+- `review_queue`
 
 Key implementation decisions:
 
-- Prompts live under `config/prompts/name_extractor/` and are loaded at runtime.
-- The stored `pNNN.names.json` keeps every stage's input/output plus prompt text, parsed model JSON, fallback notes, dropped candidates, and final keep reasons.
-- `rerun-pass` is decision-complete: it accepts `pass1`, `pass1_filter`, `recall`, `recall_filter`, or `verify`, reruns that stage, and recomputes every downstream stage while reusing intact upstream artifacts.
+- V2 prompts live under `config/prompts/name_extractor/v2/` and are loaded at runtime.
+- The stored `pNNN.names.json` keeps every stage's input/output plus prompt text, parsed model JSON, context bundles, role labels, scoring signals, dropped candidates, review queue, and final keep reasons.
+- `rerun-pass` accepts V2 stage names such as `role_label` and `decision`; legacy names such as `verify` remain accepted as aliases for compatibility.
 - Merge logic is imported from `08 normalizer` instead of being duplicated.
-- The final rule filter explains why a candidate survived or was removed, including enumerated subject-list matches, generic subject phrase rejection, negative-role matches, narrowed official-title handling, and `free born / not a slave` handling.
+- The final decision layer explains why a candidate survived or was removed, including OCR span checks, validated evidence, subject-list context, numbered-case context, relation-label handling, negative-role matches, and `free born / not a slave` handling.
 
 UI:
 
 - document/page selector limited to `should_extract=true` pages
 - full OCR text with final names highlighted and dropped names highlighted separately
-- one stage card per pass with counts, prompt, and parsed response JSON
+- one stage card per V2 pass with counts, prompt, parsed response JSON, and scoring/debug payloads
 - final name table
 - dropped-candidate table with stage + reason
 
@@ -380,10 +384,10 @@ Status: implemented on 2026-04-24 as a standalone dashboard under `http://127.0.
 
 ### Tasks
 
-- `pipeline.py`: `run_document(doc_id)` calls modules in order through the file-system contract.
+- `pipeline.py`: `run_document(doc_id)` calls a combined in-memory ingest+OCR step, then classifier, names, metadata, places, and aggregation through the file-system contract.
 - `job_store.py`: simple job state management with JSON files; no database needed.
 - Per-page progress tracking.
-- Idempotency: if a module artifact already exists, skip the rerun.
+- Idempotency: if a module artifact already exists, skip the rerun. For the combined ingest+OCR step, a compatible OCR manifest allows existing `pNNN.txt` files to be reused without rerendering page images.
 - Blueprint `/orchestrate/*`:
   - `POST /orchestrate/run`: start a job
   - `POST /orchestrate/pause/<job_id>`: soft-pause after the current stage
@@ -403,7 +407,7 @@ Status: implemented on 2026-04-24 as a standalone dashboard under `http://127.0.
 
 ### Verification
 
-Upload a real PDF, run it end to end, and watch the dashboard. The current job state should already be visible on first load, each status cell should turn done in order, stream interruptions should fall back to status polling rather than freezing the page, and final CSV files should be written.
+Upload a real PDF, run it end to end, and watch the dashboard. The current job state should already be visible on first load. The ingest and OCR cells should update from the same streaming step as each page is rendered in memory and OCR text is written, stream interruptions should fall back to status polling rather than freezing the page, and final CSV files should be written.
 
 Implemented verification:
 
@@ -520,7 +524,7 @@ The project is split into seven phases, each with a clear demoable result. This 
 
 - [x] `page_classifier` UI can show OCR text, evidence highlighting, raw model JSON, and rule-comparison signals for a selected page.
 - [x] `page_classifier` CLI runs independently and writes `pNNN.classify.json` under `data/intermediate/<doc_id>/`.
-- [x] `name_extractor` UI can show five stage cards, OCR highlighting, final names, and dropped-candidate reasons for a selected page.
+- [x] `name_extractor` UI can show V2 stage cards, OCR highlighting, final names, context/role/decision artifacts, review queue, and dropped-candidate reasons for a selected page.
 - [x] `name_extractor` CLI runs independently and writes `pNNN.names.json` under `data/intermediate/<doc_id>/`.
 - [x] `metadata_extractor` UI can show field cards, evidence highlighting, validation, and prompt/response details for a selected person.
 - [x] `metadata_extractor` CLI runs independently and writes `pNNN.meta.json` under `data/intermediate/<doc_id>/`.
@@ -534,7 +538,7 @@ The project is split into seven phases, each with a clear demoable result. This 
 ### M5 Orchestration
 
 - [ ] Dashboard can upload a PDF and run end to end.
-- [ ] Each page's six status cells turn done in order.
+- [ ] Each page's status cells turn done in order; ingest and OCR are driven by the combined in-memory render+OCR step.
 - [ ] Killing and restarting midway resumes the run.
 
 ### M6 Main Web App
