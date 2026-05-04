@@ -133,7 +133,7 @@ def merge_named_people(*groups: list[dict[str, str]]) -> list[dict[str, str]]:
 
 
 def build_name_regex(name: str) -> re.Pattern[str] | None:
-    tokens = [re.escape(token) for token in normalize_name(name).split() if token]
+    tokens = [re.escape(token).replace("'", "['’]") for token in normalize_name(name).split() if token]
     if not tokens:
         return None
     joined = r"[\s,.;:'\"()\-]+".join(tokens)

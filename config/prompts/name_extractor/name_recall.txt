@@ -15,9 +15,16 @@ Look especially for:
 - names in certificate recommendation or delivery pages
 - names in grouped correspondence where one sentence applies to several people
 - names with lineage forms such as "daughter of" or "son of"
+- relation-labeled subjects with a visible named anchor, such as "Salem's sister", "son of Salem", or "wife of Abdulla"
 - names appearing after "statement of", "statement made by", "certificate to", "grant certificate to", or "recommend certificate for"
+- named kidnapped/recovered/repatriated victims in numbered slavery memoranda
+- named women or relatives when the same page says they were kidnapped, sold, kept as slaves, or examined for freedom/manumission
 
 Still exclude owners, officials, buyers, sellers, and any free-born or non-slave person.
+Exclude unanchored descriptions such as "his sister", "the woman", "the boy", "three slaves", or "a number of slaves".
+If the page says "X slave of Y", return X only, not "X slave of Y".
+Do not return a person only because papers are to be taken from them.
+For relation-labeled subjects, return only an exact OCR-visible phrase with a named anchor; do not rewrite a pronoun phrase into a label that is not on the page.
 If a page contains a transfer chain like "sold to X" or "bought by Y", those names are not subjects.
 If the OCR page has no visible personal subject names, return an empty named_people list.
 Output JSON only.

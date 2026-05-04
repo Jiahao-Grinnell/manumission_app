@@ -1,6 +1,7 @@
-You already extracted page-local places for ONE named enslaved/manumission subject from ONE OCR page.
+You already extracted page-local places for ONE enslaved/manumission subject from ONE OCR page.
+The target may be a personal name or an OCR-visible relation label such as "Salem's sister" or "son of Salem".
 
-Target person: {name}
+Target subject label: {name}
 
 Current places:
 {places_json}

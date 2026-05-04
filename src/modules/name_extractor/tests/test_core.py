@@ -43,7 +43,7 @@ class CoreTests(unittest.TestCase):
             ]
         )
         result = extract_names(_fixture("single_subject.txt"), report_type="statement", client=client)
-        self.assertEqual([item["name"] for item in result.named_people], ["Ahmad bin Said", "Mariam bint Yusuf"])
+        self.assertEqual([item["name"] for item in result.named_people], ["Mariam bint Yusuf"])
         self.assertTrue(any(item["name"] == "Rashid bin Hamad" and item["stage"] == "pass1_filter" for item in result.removed_candidates))
         self.assertEqual(result.model_calls, 5)
 
@@ -69,6 +69,29 @@ class CoreTests(unittest.TestCase):
             {"Surur", "Aman bin Faragh", "Zuwaid bin Mabrook", "Daaji bin Khamis"},
         )
 
+    def test_final_rule_stage_reconsiders_merged_candidates_when_verify_drops_subject(self) -> None:
+        client = FakeClient(
+            [
+                {
+                    "named_people": [
+                        {"name": "Abdulla", "evidence": "Abyssinian slave named Abdulla"},
+                        {"name": "Abdulla's Wife", "evidence": "married to a female slave of his"},
+                    ]
+                },
+                {
+                    "named_people": [
+                        {"name": "Abdulla", "evidence": "Abyssinian slave named Abdulla"},
+                        {"name": "Abdulla's Wife", "evidence": "married to a female slave of his"},
+                    ]
+                },
+                {"named_people": [{"name": "Abdulla", "evidence": "slave named Abdulla"}]},
+                {"named_people": [{"name": "Abdulla", "evidence": "slave named Abdulla"}]},
+                {"named_people": [{"name": "Abdulla's Wife", "evidence": "married to a female slave of his"}]},
+            ]
+        )
+        result = extract_names(_fixture("full_p012_abdulla_statement.txt"), report_type="statement", client=client)
+        self.assertEqual([item["name"] for item in result.named_people], ["Abdulla"])
+
     def test_rerun_verify_reuses_existing_upstream_stages(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -93,7 +116,7 @@ class CoreTests(unittest.TestCase):
             )
             out_path = inter_dir / "p001.names.json"
             first = extract_file(in_dir / "p001.txt", inter_dir / "p001.classify.json", out_path, client=first_client)
-            self.assertEqual(len(first.named_people), 2)
+            self.assertEqual(len(first.named_people), 1)
 
             rerun_client = FakeClient(
                 [

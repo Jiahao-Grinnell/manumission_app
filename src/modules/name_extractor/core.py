@@ -130,7 +130,8 @@ def extract_names(
         if _should_compute("verify", start_stage, existing_passes)
         else _restore_stage(existing_passes["verify"], "verify")
     )
-    rule_filter_stage, final_people, final_reasons = _build_rule_stage(verify_stage["candidates"], prepared_text)
+    rule_input_candidates = merge_name_candidates(merged_stage["candidates"], verify_stage["candidates"])
+    rule_filter_stage, final_people, final_reasons = _build_rule_stage(rule_input_candidates, prepared_text)
 
     passes = {
         "pass1": pass1_stage,

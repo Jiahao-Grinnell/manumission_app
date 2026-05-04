@@ -37,7 +37,7 @@ Available now:
 - `ocr` can preview the preprocessing pipeline for rendered page PNGs.
 - `ocr` has a CLI and a standalone local UI at `http://127.0.0.1:5103/ocr/`.
 - `ocr` writes durable text artifacts under `data/ocr_text/<doc_id>/` when the OCR model is available.
-- `page_classifier` can classify OCR text pages into extract/skip decisions and report types.
+- `page_classifier` keeps OCR pages with visible personal names, skips pages without visible personal names, and classifies report types.
 - `page_classifier` has a CLI and a standalone local UI at `http://127.0.0.1:5104/classify/`.
 - `page_classifier` writes durable JSON artifacts under `data/intermediate/<doc_id>/pNNN.classify.json`.
 - `name_extractor` can run the five-stage subject-name pipeline for pages where `should_extract=true`.
@@ -738,6 +738,8 @@ Expected highlights:
 "report_type":
 "evidence":
 "override":
+"skip_override":
+"person_name_presence_hint":
 ```
 
 Run a whole-document classification job:

@@ -15,11 +15,13 @@ Who to INCLUDE:
 - people named in shared lists such as "the following refugee slaves", "for delivery to:", numbered subject lists, grouped recommendation pages, grouped certificate pages, or grouped forwarding pages
 - people on correspondence pages when the page is clearly about granting, recommending, delivering, or forwarding their manumission-related papers
 - a child, mother, son, daughter, or grouped family member when the page explicitly gives that person a name and clearly treats them as part of the subject group
+- relation-labeled subjects with a visible named anchor, such as "Salem's sister", "son of Salem", "wife of Abdulla", when that relation-labeled person is the enslaved/manumission subject
 
 Who to EXCLUDE:
 - owners, masters, buyers, sellers, captains, rulers, sheikhs, secretaries, agents, clerks, witnesses, correspondents, office staff, and other non-subject people
 - a person mentioned only because the page says "sold to X", "sold me to X", "bought by Y", "belonging to Z", "letter from Z", "statement recorded by A", or similar non-subject roles
 - any free-born person or any person explicitly described as not being a slave
+- unnamed or unanchored descriptions such as "his sister", "the woman", "the boy", "three slaves", "a number of slaves", or "three females with two children"
 
 Critical disambiguation:
 - if a statement says the subject was sold TO someone, that buyer is not a subject
@@ -36,8 +38,12 @@ How to read the page:
 Name formatting rules:
 - preserve the fullest page-supported personal name string
 - keep lineage and kinship connectors such as bin, bint, daughter of, son of, Abu, Umm when present
+- for a relation-labeled subject, return the exact OCR-visible phrase with the named anchor, e.g. "Salem's sister" or "son of Salem"; do not rewrite "his sister" into an invented label
+- if the page says "X slave of Y" or "X, the slave of Y", return only X; Y is the owner/master context
+- if the page says "papers from X" or "take ... papers from X", do not treat X as the subject unless another phrase directly says X is the enslaved/manumission subject
 - do not return titles or office descriptions as names
 - include only real named people, not unnamed descriptions like "slave girl", "a woman", "three slaves" with no names
+- in numbered slavery memoranda, include named kidnapped/recovered/repatriated victims, but exclude traffickers, sellers, owners, brokers, and witnesses
 
 Evidence rules:
 - evidence must be a short quote or phrase from the page, max 25 words

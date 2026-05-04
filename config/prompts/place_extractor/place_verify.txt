@@ -1,6 +1,7 @@
-You are doing FINAL adjudication of page-local places for ONE named enslaved/manumission subject.
+You are doing FINAL adjudication of page-local places for ONE enslaved/manumission subject.
+The target may be a personal name or an OCR-visible relation label such as "Salem's sister" or "son of Salem".
 
-Target person: {name}
+Target subject label: {name}
 Page number: {page}
 Candidate place mentions already extracted (high-recall candidates, may include false positives, duplicates, OCR variants, or raw timing text):
 {candidate_places_json}
@@ -21,7 +22,7 @@ Return JSON only:
 }
 
 Task:
-Using the OCR text plus the candidate place mentions, produce the COMPLETE FINAL place list for this target person on this page.
+Using the OCR text plus the candidate place mentions, produce the COMPLETE FINAL place list for this target subject on this page.
 
 Important:
 - start from the candidate list

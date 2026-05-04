@@ -13,12 +13,19 @@ Return JSON only:
 
 Task:
 Keep ONLY candidate names that are clearly named enslaved subjects, refugee slaves, fugitive slaves, manumission applicants, certificate recipients, or clearly named members of the same enslaved or manumission subject group on this page.
+Candidates may also be relation-labeled subject phrases with a visible named anchor, such as "Salem's sister", "son of Salem", or "wife of Abdulla".
 
 Critical rules:
 - Choose ONLY from the provided candidate list. Do not invent new names.
 - Exclude owners, masters, buyers, sellers, rulers, sheikhs, captains, correspondents, writers, signatories, witnesses, office staff, and other non-subject people.
 - If the page says the subject was sold TO someone, bought by someone, belonged to someone, or was recorded by someone, that other person is not a subject.
+- If a candidate looks like "X slave of Y" or "X, the slave of Y", keep only X when X is in the candidate list; do not keep the owner/master phrase as part of the name.
+- If the evidence is only "papers from X" or "take ... papers from X", exclude X unless another phrase directly identifies X as the enslaved/manumission subject.
+- In numbered slavery memoranda, keep named kidnapped/recovered/repatriated victims; exclude traffickers, sellers, owners, brokers, and witnesses.
 - If a short telegram or administrative page explicitly says something like "slave ... named X", "named X ... slave", or "X requests repatriation", keep that person.
+- Keep a relation-labeled candidate only when the relation-labeled person is directly tied to slavery, kidnapping, sale, freedom, manumission, recovery, release, or a certificate on this page.
+- Exclude unanchored generic candidates such as "his sister", "the woman", "the boy", "three slaves", "a number of slaves", or "three females with two children".
+- Exclude witness/proof/people-who-know relation mentions unless the same local text directly identifies that relation-labeled person as the subject.
 - If uncertain, prefer precision: exclude the doubtful name.
 
 Evidence rules:

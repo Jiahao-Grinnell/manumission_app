@@ -7,7 +7,7 @@ This is an end-to-end extraction system for **historical slavery and manumission
 1. Split the PDF into one image per page.
 2. Run OCR on each page image to obtain text.
 3. Use LLMs to extract from each page:
-   - whether the page should be extracted, whether it is an index or bad-OCR page, and the report type
+   - whether the page has any visible personal names, whether no-name pages should be skipped, and the report type
    - the **names of enslaved or manumitted subjects** mentioned on the page
    - each person's **case metadata**, including crime type, abuse, conflict type, trial outcome, and amount paid
    - each person's **place path**, including birthplace, place of capture, arrival place, transit places, and related dates
@@ -320,7 +320,7 @@ This is one of the key features of the refactor. Every processing module has a `
 |---|---|
 | 02 pdf_ingest | PDF thumbnail grid, page count, dimensions, file size summary |
 | 03 ocr | Original image -> grayscale/enhanced -> deskew -> crop -> tiles; OCR text alignment; raw model response JSON |
-| 04 page_classifier | Full OCR text, classification badges, highlighted evidence, raw responses |
+| 04 page_classifier | Full OCR text, classification badges, visible-name/skip hints, highlighted evidence, raw responses |
 | 05 name_extractor | Highlighted final and dropped names, five-stage cards with prompt/response inspection, removed-candidate reasons, rerun-stage controls |
 | 06 metadata_extractor | Field cards with paired evidence, OCR highlighting, validation statuses, and prompt/response inspection for one selected person |
 | 07 place_extractor | Ordered place path, highlighted evidence for each place, date-confidence blocks |

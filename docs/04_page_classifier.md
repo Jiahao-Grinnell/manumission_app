@@ -1,8 +1,8 @@
 # Module 04 - page_classifier
 
-> Decides whether a page has any visible personal names and, if so, what report type it is. This is the simplest LLM module in the pipeline, but it determines the downstream processing path.
+> Decides whether a page has any visible personal names and, if so, what report type it is. This is the first downstream gate, but it intentionally leaves subject-role decisions to `name_extractor`.
 
-Status: implemented on 2026-04-21 as a prompt-backed classifier with CLI, Flask blueprint, standalone UI, regex override inspection, and fixture-based unit tests.
+Status: implemented on 2026-04-21 as a prompt-backed classifier with CLI, Flask blueprint, standalone UI, report-type and visible-name rule inspection, and fixture-based unit tests.
 
 ## 1. Purpose
 
@@ -13,7 +13,7 @@ Given one page of OCR text, make a single LLM call and output:
 - `report_type: "statement" | "correspondence"`
 - `evidence: str`: a quote of no more than 25 words
 
-This is the gatekeeper for all downstream modules. It intentionally does not decide which names are enslaved/manumission subjects; later modules make that call.
+This is the gatekeeper for all downstream modules. Its final extract/skip rule is deliberately simple: keep pages with visible personal names and skip pages without visible personal names. It intentionally does not decide which names are enslaved/manumission subjects; later modules make that call.
 
 ## 2. Input / Output
 
@@ -54,23 +54,25 @@ This is the gatekeeper for all downstream modules. It intentionally does not dec
 
 ## 3. Core Algorithm
 
-Inherited from the original `model_page_decision`:
+The LLM supplies a structured page decision, evidence, and report-type guess, but the final `should_extract` value is controlled by the OCR-based visible-name gate:
 
 ```python
 def classify(ocr: str, stats: CallStats, *, report_type_override=None) -> PageDecision:
-    if report_type_override:
-        return PageDecision(True, None, choose_report_type(report_type_override), "override")
     schema = '{"should_extract":true,"skip_reason":null,"report_type":"statement","evidence":"..."}'
     obj = client.generate_json(render(PAGE_CLASSIFY_PROMPT, ocr=ocr), schema, stats, num_predict=500)
     decision = parse_page_decision(obj)
-    # Post-regex correction: some strong signals should not be overridden by the model.
+
+    skip_override = explain_skip_override(ocr, decision)
+    decision.should_extract = not skip_override["should_skip"]
+    decision.skip_reason = skip_override["skip_reason"]
+
     decision.report_type = override_report_type_from_ocr(ocr, decision.report_type)
     return decision
 ```
 
 `override_report_type_from_ocr` is an important but conservative fallback. It corrects the model to `statement` only for strong subject-statement signals, such as `Statement of slave Mariam bint Yusuf`, `statement made by <real name>`, or clear first-person statement openings such as `I was born` / `I was kidnapped`. Generic phrases such as `statement made by the slave` and correspondence phrasing such as `I request` do not force `statement`. Administrative, forwarding, certificate, passage, and transport signals fall under `correspondence`.
 
-`explain_skip_override` is a second rule layer for hard skips. It follows one rule: pages with any visible personal name stay extractable, even if the name is an official, buyer, owner, seller, witness, or signatory. Pages with no visible personal names are skipped, using `bad_ocr` only when the no-name page is unreadable and otherwise `record_metadata`. Subject-role decisions belong to `name_extractor`, not `page_classifier`.
+`explain_skip_override` is the final extract/skip rule layer. It follows one rule: pages with any visible personal name stay extractable, even if the name is an official, buyer, owner, seller, witness, or signatory. Pages with no visible personal names are skipped, using `bad_ocr` only when the no-name page is unreadable and otherwise `record_metadata`. Diagnostic hints such as administrative-forwarding or index patterns can still be shown in the UI, but they do not independently force a skip.
 
 Load the prompt from `config/prompts/page_classifier/page_classify.txt`, moved from the original `PAGE_CLASSIFY_PROMPT`.
 
@@ -140,9 +142,10 @@ python -m modules.page_classifier.cli \
 |  evidence:        "Statement of slave Mariam bint Yusuf..."     |
 |  model_calls: 1   repair_calls: 0   elapsed: 3.4s               |
 +-----------------------------------------------------------------+
-|  Regex override check                                           |
+|  Rule/override check                                            |
 |  STATEMENT pattern:        matched -> would override -> no change |
 |  CORRESPONDENCE pattern:   not matched                            |
+|  Visible personal name:    true -> final should_extract true       |
 +-----------------------------------------------------------------+
 |  OCR text with evidence highlighted                             |
 |  Statement of slave Mariam bint Yusuf, aged about 20 years, ... |
@@ -156,7 +159,7 @@ Visualization goals:
 
 - **Verdict badge**: different `report_type` values should use different colors, for example statement green and correspondence gray.
 - **Evidence highlighted in source text**: use fuzzy string matching; if the evidence cannot be located, show "evidence not located in text".
-- **Regex override comparison**: if rules and model output disagree, the UI should call that out clearly.
+- **Rule/override comparison**: if deterministic rules and model output disagree, the UI should call that out clearly.
 - **Raw response collapse panel**: useful for occasional JSON debugging.
 
 ## 8. Docker
@@ -212,7 +215,7 @@ Unit tests:
 
 Integration tests:
 
-- Run `classify()` on five fixtures: statement, correspondence-like admin text, correspondence, index, and bad OCR. Assert the expected categories.
+- Run `classify()` on fixtures covering statement, correspondence, index/bad-OCR pages, no-name administrative forwarding pages, and pages where the model asks to skip despite a visible personal name. Assert that no-name pages skip and any visible-name page stays extractable.
 
 Verification commands:
 
@@ -231,4 +234,4 @@ curl http://127.0.0.1:5104/healthz
 - [x] `override_report_type_from_ocr` has correct override behavior.
 - [x] `--report-type` forced override is supported for debugging.
 - [x] Test UI shows verdict, evidence highlighting, and rule comparison.
-- [x] Five fixture-based tests cover statement, correspondence-like admin text, correspondence, index, and bad OCR.
+- [x] Fixture-based tests cover statement/correspondence report-type overrides, no-name skips, visible-name extraction, model-skip override, index, and bad OCR.

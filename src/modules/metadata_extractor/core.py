@@ -19,7 +19,8 @@ from .parsing import parse_meta
 from .vocab import DETAIL_REPORT_TYPES
 
 
-DEFAULT_META_PROMPT = """You are extracting structured case metadata for ONE named subject from ONE OCR page.
+DEFAULT_META_PROMPT = """You are extracting structured case metadata for ONE subject from ONE OCR page.
+The subject may be a personal name or an OCR-visible relation label such as "Salem's sister" or "son of Salem".
 
 Return JSON only:
 {
@@ -40,7 +41,7 @@ Return JSON only:
   }
 }
 
-SUBJECT NAME: {name}
+SUBJECT LABEL: {name}
 PAGE: {page}
 UPSTREAM PAGE REPORT TYPE: {report_type}
 

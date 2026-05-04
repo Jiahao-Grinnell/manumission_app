@@ -1,6 +1,7 @@
-Do a second, recall-focused pass for PAGE-LOCAL places for the same target person.
+Do a second, recall-focused pass for PAGE-LOCAL places for the same target subject.
+The target may be a personal name or an OCR-visible relation label such as "Salem's sister" or "son of Salem".
 
-Target person: {name}
+Target subject label: {name}
 
 Return JSON only:
 {

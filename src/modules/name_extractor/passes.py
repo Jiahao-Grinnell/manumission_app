@@ -11,7 +11,7 @@ from shared.prompt_loader import load_prompt_text
 from shared.schemas import CallStats
 from shared.text_utils import render_prompt
 
-from .merging import looks_like_candidate_name
+from .merging import canonicalize_candidate_name, looks_like_candidate_name
 from .rules import clean_evidence
 
 
@@ -68,7 +68,7 @@ def parse_named_people(obj: Any) -> list[dict[str, str]]:
     for item in obj.get("named_people") or []:
         if not isinstance(item, dict):
             continue
-        name = normalize_name(str(item.get("name") or ""))
+        name = canonicalize_candidate_name(str(item.get("name") or ""))
         if not looks_like_candidate_name(name):
             continue
         key = name.lower()

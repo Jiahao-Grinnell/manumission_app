@@ -19,7 +19,7 @@ This boundary is context-sensitive, so the module uses multiple LLM stages plus 
 
 - `data/ocr_text/<doc_id>/pNNN.txt`
 - `data/intermediate/<doc_id>/pNNN.classify.json`
-- Only runs when `should_extract=true`
+- Only runs when `should_extract=true`; classifier-kept pages may contain any visible personal name, so this module is responsible for filtering down to actual enslaved/manumission subjects.
 
 Discovery rules for the standalone UI:
 

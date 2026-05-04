@@ -1,6 +1,7 @@
-You are extracting CANDIDATE PAGE-LOCAL places for ONE named enslaved/manumission subject from ONE OCR page.
+You are extracting CANDIDATE PAGE-LOCAL places for ONE enslaved/manumission subject from ONE OCR page.
+The subject may be a personal name or an OCR-visible relation label such as "Salem's sister" or "son of Salem".
 
-Target person: {name}
+Target subject label: {name}
 
 Return JSON only:
 {

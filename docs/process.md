@@ -234,14 +234,16 @@ This is the core business logic. Build modules one at a time in dependency order
 
 Status: implemented on 2026-04-21. The module exposes a Flask blueprint under `/classify/*`, a CLI for single-page or whole-document runs, and a standalone UI at `http://127.0.0.1:5104/classify/` when started with the `classifier` profile.
 
-The simplest LLM module: one prompt, one JSON response, one decision.
+The first NER gate: one prompt, one JSON response, plus a deterministic final visible-person-name rule.
 
 - `core.py`: `classify(ocr_text) -> PageDecision`.
 - Load prompt from `config/prompts/page_classifier/page_classify.txt`.
+- Final `should_extract` follows one rule: pages with any visible personal name stay extractable; pages with no visible personal names are skipped.
+- The classifier does not decide whether the visible name is the enslaved/manumission subject. Officials, buyers, owners, sellers, witnesses, signatories, and subjects all count as personal names here; `name_extractor` filters subject names later.
 - Keep regex report-type overrides conservative: only explicit named subject statements or clear first-person statement openings force `statement`; generic `statement made by the slave` and correspondence wording such as `I request` stay `correspondence`.
 - UI: text selector, full OCR text, JSON result, classification badge, and highlighted evidence.
 
-Verification: run known statement, correspondence/admin, correspondence, index, and bad-OCR pages and check classification.
+Verification: run known statement, correspondence, visible-name administrative, no-name administrative, index, and bad-OCR pages. Check that no-name pages skip, visible-name pages are kept, and report type remains conservative.
 
 Implemented verification:
 

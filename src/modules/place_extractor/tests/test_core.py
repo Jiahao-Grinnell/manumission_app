@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from typing import Any
 
-from modules.place_extractor.core import run_folder, run_page_file
+from modules.place_extractor.core import _name_in_ocr, run_folder, run_page_file
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -32,6 +32,9 @@ class FakeClient:
 
 
 class CoreTests(unittest.TestCase):
+    def test_name_presence_accepts_relation_label_with_curly_apostrophe(self) -> None:
+        self.assertTrue(_name_in_ocr("Salem's Sister", "Salem’s sister was kept as a slave in Kuwait."))
+
     def test_run_page_file_extracts_all_names(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
