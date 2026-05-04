@@ -1,0 +1,170 @@
+我会上传两个文件：
+
+1. 一个 .txt 文件
+   - 这是整本文件按页面合并后的 OCR。
+   - 文件名不固定，可能不叫 combined_ocr_full_input.txt。
+   - 请自动识别上传文件中唯一的 .txt 文件作为合并 OCR。
+   - 页面格式通常类似：========== PAGE 006 ==========
+   - 只看英文 OCR；阿拉伯文 OCR、明显非英文乱码页面不要用于抽取判断。
+
+2. 一个 .zip 文件
+   - 文件名不固定。
+   - 请自动识别上传文件中唯一的 .zip 文件作为 pipeline 输出包。
+   - 里面包含每一页运行 pipeline 后的 JSON 文件。
+   - 通常包括 pNNN.classify.json、pNNN.names.json 或类似命名。
+   - 这些 JSON 只作为参考，不要盲信最终结果。
+
+任务目标：
+
+请完整阅读 .txt 合并 OCR，并结合 .zip 里的 classify.json / names.json，对每一页进行人工式校对，最后输出一个简单 CSV 文件，列出所有真正的 slave / enslaved / kidnapped / recovered / manumission subject 名字，并按页面记录。
+必须逐页遍历 OCR 的每一个 PAGE block，不允许只依赖关键词搜索、classify.json、names.json 或已有 pipeline 输出。即使某页没有 names.json 或 classify=false，也必须读取该页英文 OCR 后再决定是否无抽取。
+不要输出 corrected JSON。
+不要输出 corrected_names_json.zip。
+不要输出 Markdown 表格。
+不要只总结。
+最终必须生成可下载的 CSV 文件。
+
+一、只看英文 OCR
+
+- 只根据英文 OCR 判断。
+- Arabic script 页面、阿拉伯文 OCR、明显重复乱码，不要作为抽取依据。
+- 如果同一页有英文翻译和阿拉伯文原文，只根据英文翻译部分判断。
+- 不要根据历史常识、外部知识、文件标题猜测名字。
+- 所有最终保留的人名必须能在 OCR 当前页找到直接 evidence。
+
+二、抽取对象
+
+只保留真正的 enslaved / slave / manumission / kidnapped / recovered / repatriated subject，包括：
+
+- 明确写成 slave named X
+- manumitted slave X
+- refugee slave X
+- fugitive slave X
+- X states he/she is a slave
+- X kept as a slave
+- X was kidnapped / stolen / forcibly taken away and later sold / recovered / traced
+- X entitled to freedom / given manumission certificate
+- X recovered by authorities / rescued / repatriated
+- 有 named anchor 的 relation subject，例如：
+  - Sarur's wife
+  - daughter of Muhammed
+  - son of Muhammed
+  但前提是该 relation person 本身就是被奴役、被掳、被恢复、被释放对象。
+
+三、不要保留这些人
+
+以下人即使是人名，也不要进入最终 CSV：
+
+- owner / master
+- buyer / seller / slave dealer / broker / dallal
+- kidnapper
+- witness
+- official / political agent / resident / secretary / ruler / sheikh
+- correspondent / signatory
+- complainant 或 relative anchor，除非他本人就是 slave subject
+- father / brother / son-in-law / husband / house owner，只作为关系锚点时不要抽为 subject
+- OCR header、letter recipient、sender、signature 里的官员名
+- 地名、机构名、船名、职衔
+- 泛称：the slave, the woman, the boy, three slaves, his sister, the girl
+- 没有 named anchor 的 relation phrase
+- OCR 表格错位产生的假名字，例如 “son of Age”
+
+四、重点错误类型要修正
+
+请特别检查并修正这些 pipeline 常见错误：
+
+1. 尾部名字误拆
+   - 例如 Faraj bin Said 被拆出 Said，Said 不应单独保留。
+
+2. owner / witness / complainant 被误保留
+   - 如果 X 只是说“我发现我妹妹被卖了”、“我可以找证人”、“我投诉某事”，不要把 X 当 slave subject。
+   - 真正 subject 可能是他的 sister / wife / daughter / son。
+
+3. house owner / master 被误保留
+   - “traced to the house of X”、“kept in the house of X”、“slave of X” 中的 X 通常不是 subject。
+
+4. relation label 要严格
+   - 保留 named-anchor relation subject。
+   - 不保留 generic relation phrase。
+   - 如果 OCR 明确给出具体名字，优先用具体名字，不要只用 relation label。
+
+5. classifier false negative
+   - 即使 classify.json 说 should_extract=false，也要重新读英文 OCR。
+   - 如果 OCR 里有明确 slave / kidnapped / recovered / manumission subject，也要把该页加入最终 CSV。
+   - 不要因为原 pipeline 没有 names.json 就跳过该页。
+
+6. surface name vs normalized name
+   - 最终名字应尽量忠实 OCR 中出现的 surface form。
+   - 不要因为 normalized form 不完全匹配 OCR 就删掉。
+   - 例如 OCR 是 “Ibn”，不要先改成 “bin” 再做 span 判断。
+   - 如果同一人跨页有明显 OCR 拼写变体，仍按当前页 OCR 里的名字记录，除非有明显标准写法反复出现。
+
+五、最终 CSV 输出格式
+
+最终只输出一个 CSV 文件，文件名：
+
+corrected_slave_names_by_page_simple.csv
+
+格式必须是：无表头、两列、英文逗号分隔。
+
+每行格式：
+
+名字,页码
+
+例如：
+
+Faraj bin Said,6
+Faraj bin Said,8
+Abdulla,13
+Abdulla,14
+Salem,42
+Salem,46
+Salama,122
+Abdullah Sudani,166
+Dawail Somali,166
+Faraj Krus Kah,166
+Sa'idah,180
+Sa'idah,188
+Sa'idah,192
+
+具体规则：
+
+- 每一行一个 slave / enslaved / kidnapped / recovered / manumission subject occurrence。
+- 第一列是名字或必要的 named-anchor relation label。
+- 第二列是页码，只写数字，不写 p006。
+- 同一个人如果在多页出现，每页单独一行。
+- 同一页多个 subject，就多行。
+- 不要输出 owner、master、witness、official、slave dealer、complainant、house owner、father anchor、brother anchor。
+- 不要输出 evidence。
+- 不要输出 confidence。
+- 不要输出 notes。
+- 不要输出 role。
+- 不要输出 JSON。
+- 不要输出 Markdown 表格。
+- CSV 文件不要有表头。
+- CSV 文件内容只能是两列：name 和 page。
+- 如果名字中出现英文逗号、双引号或换行，必须按标准 CSV 规则给该字段加双引号，并把字段内部双引号转义为两个双引号。
+- CSV 文件建议使用 UTF-8 编码。
+
+六、同时输出一个简短审计报告
+
+除了 corrected_slave_names_by_page_simple.csv，再输出一个 audit_report.md，简短说明：
+
+- 总共抽出多少行
+- 涉及多少页
+- 删除了哪些明显 false positives
+- 新增了哪些原 pipeline 漏掉的人
+- 哪些名字不确定，需要人工复核
+- 主要判断规则和错误模式
+
+七、最终回复格式
+
+最终回复只需要给：
+
+1. corrected_slave_names_by_page_simple.csv 的下载链接
+2. audit_report.md 的下载链接
+3. 一句简短总结
+
+不要把 CSV 全部内容直接贴在聊天里。
+不要输出 JSON。
+不要输出 Markdown 表格。
