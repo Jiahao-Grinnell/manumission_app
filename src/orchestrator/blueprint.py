@@ -121,6 +121,9 @@ def resume(doc_id: str):
         return jsonify(_job_payload(current)), 409
     if current and str(current.get("status") or "") == "awaiting_name_review":
         return jsonify(_job_payload(current)), 409
+    review = current.get("name_review") if isinstance(current, dict) else {}
+    review_status = str((review if isinstance(review, dict) else {}).get("status") or "")
+    continue_after_review = review_status in {"accepted", "uploaded"}
     existing_pdf = doc_paths(normalized_doc_id).pdf
     job = job_store.create_job(
         normalized_doc_id,
@@ -130,17 +133,17 @@ def resume(doc_id: str):
         ocr_model=str((current or {}).get("ocr_model") or settings.OCR_MODEL),
         text_model=str((current or {}).get("text_model") or settings.OLLAMA_MODEL),
     )
-    _start_worker(
-        job["job_id"],
-        normalized_doc_id,
-        {
-            "source_pdf": str(existing_pdf) if existing_pdf.exists() else "",
-            "dpi": int((current or {}).get("dpi") or 300),
-            "resume": True,
-            "ocr_model": str((current or {}).get("ocr_model") or settings.OCR_MODEL),
-            "text_model": str((current or {}).get("text_model") or settings.OLLAMA_MODEL),
-        },
-    )
+    options = {
+        "source_pdf": str(existing_pdf) if existing_pdf.exists() else "",
+        "dpi": int((current or {}).get("dpi") or 300),
+        "resume": True,
+        "ocr_model": str((current or {}).get("ocr_model") or settings.OCR_MODEL),
+        "text_model": str((current or {}).get("text_model") or settings.OLLAMA_MODEL),
+    }
+    if continue_after_review:
+        options["name_review_completed"] = True
+        options["continue_after_name_review"] = True
+    _start_worker(job["job_id"], normalized_doc_id, options)
     return jsonify(_job_payload(job))
 
 
@@ -202,6 +205,7 @@ def continue_name_review(job_id: str):
             "ocr_model": str(current.get("ocr_model") or settings.OCR_MODEL),
             "text_model": str(current.get("text_model") or settings.OLLAMA_MODEL),
             "name_review_completed": True,
+            "continue_after_name_review": True,
         },
     )
     return jsonify(_job_payload(current))

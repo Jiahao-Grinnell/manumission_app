@@ -40,26 +40,34 @@ def run_document(job_id: str, doc_id: str, *, options: PipelineOptions | None = 
 
     resume = bool(opts.get("resume", True))
     try:
-        _run_ingest_ocr(
-            job,
-            source_pdf=source_pdf,
-            dpi=int(opts.get("dpi") or 300),
-            resume=resume,
-            ocr_model=str(opts.get("ocr_model") or settings.OCR_MODEL),
-        )
-        if _stop_if_requested(job):
-            return job
-        _run_folder_stage(job, "classify", _ocr_pages(paths.ocr_dir), resume=resume, text_model=str(opts.get("text_model") or settings.OLLAMA_MODEL))
-        _propagate_classify_skips(job)
-        if _stop_if_requested(job):
-            return job
-        _run_folder_stage(job, "names", _extractable_pages(paths), resume=resume, text_model=str(opts.get("text_model") or settings.OLLAMA_MODEL))
-        _propagate_name_skips(job)
-        if _stop_if_requested(job):
-            return job
-        if not _name_review_completed(job, opts):
-            _pause_for_name_review(job, paths=paths)
-            return job
+        if _continue_after_name_review(opts):
+            if not _name_review_completed(job, opts):
+                raise RuntimeError("Cannot continue after name review before names are accepted or uploaded.")
+            _prepare_after_name_review(job, paths=paths)
+            job_store.append_log(job, "Continuing after name review; skipping ingest/OCR, classify, and names.")
+            if _stop_if_requested(job):
+                return job
+        else:
+            _run_ingest_ocr(
+                job,
+                source_pdf=source_pdf,
+                dpi=int(opts.get("dpi") or 300),
+                resume=resume,
+                ocr_model=str(opts.get("ocr_model") or settings.OCR_MODEL),
+            )
+            if _stop_if_requested(job):
+                return job
+            _run_folder_stage(job, "classify", _ocr_pages(paths.ocr_dir), resume=resume, text_model=str(opts.get("text_model") or settings.OLLAMA_MODEL))
+            _propagate_classify_skips(job)
+            if _stop_if_requested(job):
+                return job
+            _run_folder_stage(job, "names", _extractable_pages(paths), resume=resume, text_model=str(opts.get("text_model") or settings.OLLAMA_MODEL))
+            _propagate_name_skips(job)
+            if _stop_if_requested(job):
+                return job
+            if not _name_review_completed(job, opts):
+                _pause_for_name_review(job, paths=paths)
+                return job
         _run_folder_stage(job, "meta", _pages_with_names(paths), resume=resume, text_model=str(opts.get("text_model") or settings.OLLAMA_MODEL))
         if _stop_if_requested(job):
             return job
@@ -236,6 +244,70 @@ def _name_review_completed(job: dict[str, Any], opts: PipelineOptions) -> bool:
     if not isinstance(review, dict):
         return False
     return str(review.get("status") or "") in {"accepted", "uploaded"}
+
+
+def _continue_after_name_review(opts: PipelineOptions) -> bool:
+    return bool(opts.get("continue_after_name_review") or opts.get("start_after_name_review"))
+
+
+def _prepare_after_name_review(job: dict[str, Any], *, paths) -> None:
+    ocr_pages = _ocr_pages(Path(paths.ocr_dir))
+    if not ocr_pages:
+        raise FileNotFoundError(f"No OCR text found for {job['doc_id']}; cannot continue after name review.")
+    total_pages = max(max(ocr_pages), int(job.get("total_pages") or 0))
+    job_store.ensure_pages(job, total_pages)
+
+    for page in range(1, total_pages + 1):
+        text_path = Path(paths.ocr_text(page))
+        page_record = job_store.get_page(job, page)
+        if text_path.exists():
+            if page_record["ingest"]["state"] == "pending":
+                job_store.mark_stage(job, "ingest", page, state="skipped", detail="reused existing OCR text")
+            if page_record["ocr"]["state"] == "pending":
+                ocr_state = "done" if artifact_ok(text_path, "ocr_text") else "failed"
+                job_store.mark_stage(
+                    job,
+                    "ocr",
+                    page,
+                    state=ocr_state,
+                    detail="existing OCR text" if ocr_state == "done" else "missing OCR text",
+                )
+        else:
+            if page_record["ocr"]["state"] == "pending":
+                job_store.mark_stage(job, "ocr", page, state="skipped", detail="no OCR text")
+
+        classify = _read_json_optional(Path(paths.classify(page)))
+        names = _load_names(Path(paths.names(page)))
+        if classify.get("should_extract"):
+            if page_record["classify"]["state"] in {"pending", "skipped"} or classify.get("name_review_override"):
+                _reset_page_stage(job, page, "classify")
+                job_store.mark_stage(job, "classify", page, state="done", detail="name review ready")
+            if names:
+                _reset_page_stage(job, page, "names")
+                job_store.mark_stage(job, "names", page, state="done", detail="accepted from name review")
+                for stage, artifact in (("meta", Path(paths.meta(page))), ("places", Path(paths.places(page)))):
+                    if artifact_ok(artifact, "json"):
+                        _reset_page_stage(job, page, stage)
+                        job_store.mark_stage(job, stage, page, state="done", detail="existing artifact")
+                    else:
+                        _reset_page_stage(job, page, stage, detail="pending after name review")
+            else:
+                if Path(paths.names(page)).exists() and page_record["names"]["state"] == "pending":
+                    job_store.mark_stage(job, "names", page, state="done", detail="no named people")
+                for stage in ("meta", "places"):
+                    _reset_page_stage(job, page, stage)
+                    job_store.mark_stage(job, stage, page, state="skipped", detail="no named people")
+        elif classify:
+            reason = str(classify.get("skip_reason") or "not extractable")
+            for stage in ("names", "meta", "places"):
+                if page_record[stage]["state"] in {"pending", "running"}:
+                    job_store.mark_stage(job, stage, page, state="skipped", detail=reason)
+
+        _reset_page_stage(job, page, "aggregate")
+
+    job["aggregate"] = job_store.stage_record()
+    job_store.save_job(job)
+    job_store.emit_event(job, "page_updated", {"stage": "names"})
 
 
 def _pause_for_name_review(job: dict[str, Any], *, paths) -> None:
@@ -426,6 +498,14 @@ def _prime_running(job: dict[str, Any], stage: str, page_numbers: list[int]) -> 
     first_page = page_numbers[0]
     if job_store.get_page(job, first_page)[stage]["state"] == "pending":
         job_store.mark_stage(job, stage, first_page, state="running", detail=f"processing {stage}")
+
+
+def _reset_page_stage(job: dict[str, Any], page: int, stage: str, *, detail: str = "") -> None:
+    record = job_store.get_page(job, page)[stage]
+    record.clear()
+    record.update(job_store.stage_record())
+    if detail:
+        record["detail"] = detail
 
 
 def _stop_if_requested(job: dict[str, Any]) -> bool:

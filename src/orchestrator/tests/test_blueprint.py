@@ -246,6 +246,7 @@ class OrchestratorBlueprintTests(unittest.TestCase):
                 self.assertEqual(payload["name_review"]["name_rows"], 2)
                 start_worker.assert_called_once()
                 self.assertTrue(start_worker.call_args.args[2]["name_review_completed"])
+                self.assertTrue(start_worker.call_args.args[2]["continue_after_name_review"])
 
             updated_page1 = json.loads(paths.names(1).read_text(encoding="utf-8"))
             updated_page2 = json.loads(paths.names(2).read_text(encoding="utf-8"))
@@ -257,6 +258,43 @@ class OrchestratorBlueprintTests(unittest.TestCase):
             self.assertFalse(paths.meta(1).exists())
             self.assertFalse(paths.places(1).exists())
             self.assertFalse((paths.output_dir / "Detailed info.csv").exists())
+
+    def test_resume_after_reviewed_job_continues_after_name_review(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake_settings = mock.Mock(
+                DATA_ROOT=root,
+                logs_root=root / "logs",
+                input_pdfs_dir=root / "input_pdfs",
+                OCR_MODEL="ocr-mock",
+                OLLAMA_MODEL="text-mock",
+            )
+            fake_settings.input_pdfs_dir.mkdir(parents=True, exist_ok=True)
+            doc_id = "demo_review_resume"
+            paths = _doc_paths(root, doc_id)
+            paths.pdf.parent.mkdir(parents=True, exist_ok=True)
+            paths.pdf.write_bytes(b"%PDF-1.4 fake")
+
+            with (
+                mock.patch.object(orch_blueprint, "settings", fake_settings),
+                mock.patch.object(job_store, "settings", fake_settings),
+                mock.patch.object(orch_blueprint, "doc_paths", side_effect=lambda current_doc_id: _doc_paths(root, current_doc_id)),
+                mock.patch.object(orch_blueprint, "_start_worker") as start_worker,
+            ):
+                app = create_app()
+                client = app.test_client()
+                current = job_store.create_job(doc_id, source_pdf=paths.pdf.name)
+                current["status"] = "paused"
+                current["name_review"] = {"status": "uploaded"}
+                job_store.save_job(current)
+
+                response = client.post(f"/orchestrate/resume/{doc_id}")
+
+                self.assertEqual(response.status_code, 200)
+                start_worker.assert_called_once()
+                options = start_worker.call_args.args[2]
+                self.assertTrue(options["name_review_completed"])
+                self.assertTrue(options["continue_after_name_review"])
 
     def test_orphaned_running_job_is_marked_paused_on_status(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

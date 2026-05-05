@@ -1,118 +1,328 @@
-我会上传两个文件：
+Here is the full reusable prompt translated into English:
 
-1. 一个 .txt 文件
-   - 这是整本文件按页面合并后的 OCR。
-   - 文件名不固定，可能不叫 combined_ocr_full_input.txt。
-   - 请自动识别上传文件中唯一的 .txt 文件作为合并 OCR。
-   - 页面格式通常类似：========== PAGE 006 ==========
-   - 只看英文 OCR；阿拉伯文 OCR、明显非英文乱码页面不要用于抽取判断。
+```text
+I will upload two files:
 
-2. 一个 .zip 文件
-   - 文件名不固定。
-   - 请自动识别上传文件中唯一的 .zip 文件作为 pipeline 输出包。
-   - 里面包含每一页运行 pipeline 后的 JSON 文件。
-   - 通常包括 pNNN.classify.json、pNNN.names.json 或类似命名。
-   - 这些 JSON 只作为参考，不要盲信最终结果。
+1. One .txt file
+   - This is the OCR text of the entire document, merged by page.
+   - The filename is not fixed and may not be called combined_ocr_full_input.txt.
+   - Please automatically identify the only uploaded .txt file as the merged OCR input.
+   - The page format is usually similar to:
+     ========== PAGE 006 ==========
+   - You must read it page by page by PAGE block.
+   - Do not rely only on keyword search.
+   - Do not rely only on pipeline output.
+   - Do not extract only pages that obviously contain slave/manumission keywords.
+   - Even if a page has no pipeline result, you must still read the English OCR on that page and decide whether there is no extraction.
 
-任务目标：
+2. One .csv file
+   - The filename is not fixed.
+   - Please automatically identify the only uploaded .csv file as the pipeline output package.
+   - It contains the JSON file contents produced by the pipeline for each page.
+   - It usually includes pNNN.classify.json, pNNN.names.json, or similarly named records.
+   - These JSON records are only references. Do not blindly trust them.
+   - If classify=false or names is empty, you must still manually read the English OCR on that page.
+   - If the pipeline extracted names, you must still return to the current OCR page and verify the evidence before accepting them.
 
-请完整阅读 .txt 合并 OCR，并结合 .zip 里的 classify.json / names.json，对每一页进行人工式校对，最后输出一个简单 CSV 文件，列出所有真正的 slave / enslaved / kidnapped / recovered / manumission subject 名字，并按页面记录。
-必须逐页遍历 OCR 的每一个 PAGE block，不允许只依赖关键词搜索、classify.json、names.json 或已有 pipeline 输出。即使某页没有 names.json 或 classify=false，也必须读取该页英文 OCR 后再决定是否无抽取。
-不要输出 corrected JSON。
-不要输出 corrected_names_json.zip。
-不要输出 Markdown 表格。
-不要只总结。
-最终必须生成可下载的 CSV 文件。
+Task objective:
 
-一、只看英文 OCR
+Please read the complete merged OCR .txt file and, using the classify.json / names.json records in the .csv only as references, manually review every page. Finally, output a simple CSV file listing all true slave / enslaved / kidnapped / recovered / manumission / repatriated subject names, recorded by page.
 
-- 只根据英文 OCR 判断。
-- Arabic script 页面、阿拉伯文 OCR、明显重复乱码，不要作为抽取依据。
-- 如果同一页有英文翻译和阿拉伯文原文，只根据英文翻译部分判断。
-- 不要根据历史常识、外部知识、文件标题猜测名字。
-- 所有最终保留的人名必须能在 OCR 当前页找到直接 evidence。
+You must iterate through every PAGE block in the OCR.
+Do not output corrected JSON.
+Do not output corrected_names_json.zip.
+Do not output a Markdown table.
+Do not only summarize.
+You must generate a downloadable CSV file.
 
-二、抽取对象
+1. File identification rules
 
-只保留真正的 enslaved / slave / manumission / kidnapped / recovered / repatriated subject，包括：
+- Automatically identify the only .txt file as the OCR input.
+- Automatically identify the only .csv file as the pipeline reference input.
+- Only ask me if there is not exactly one .txt file or not exactly one .csv file.
+- Do not assume fixed filenames.
+- Do not stop just because the filenames are unexpected.
+- Read the complete files, not just preview snippets.
+- If the files are long, you must still process all PAGE blocks.
 
-- 明确写成 slave named X
-- manumitted slave X
-- refugee slave X
+2. OCR page-processing rules
+
+- Split pages using the following format:
+  ========== PAGE NNN ==========
+- In the final output, page numbers must be digits only, for example 6, 13, 166. Do not write PAGE 006 or p006.
+- Every PAGE block must be checked.
+- If a PAGE block contains duplicated OCR text, merge the judgment and do not duplicate the same name just because the text is repeated.
+- If the same subject appears multiple times on the same page, output it only once for that page.
+- If the same subject appears on different pages, output one separate row for each page.
+- If multiple subjects appear on the same page, output one row per subject.
+- If the OCR page is clearly a cover page, table of contents, or index, but it explicitly lists manumission/slave subject names, those names may be kept as occurrences for that page.
+- If the page only contains a file title, archival description, copyright notice, or page metadata without a specific subject, do not extract anything.
+
+3. Use only English OCR
+
+- Make judgments only from the English OCR.
+- Do not use Arabic-script pages, Arabic OCR, obvious non-English gibberish, or obvious repeated garbage as extraction evidence.
+- If the same page contains both an English translation and Arabic original text, judge only from the English translation.
+- Do not infer names from historical knowledge, external knowledge, or document titles.
+- Every final retained name must have direct English evidence on the current OCR page.
+- Do not use evidence from another page to support extraction on the current page.
+- Do not force a standardized name onto a page where that name does not appear.
+- If the OCR spelling on the current page is imperfect but clearly identifiable, preserve the current page’s OCR surface form as much as possible.
+- If the current page contains an obviously fuller form of the name, prefer the fuller form.
+
+4. Definition of extraction subjects
+
+Keep only true subjects, meaning the person themselves is an enslaved / slave / kidnapped / recovered / rescued / repatriated / fugitive slave / refugee slave / manumission subject / entitled-to-freedom subject.
+
+Include, but do not limit to, cases explicitly written as:
+
+- slave named X
+- a slave named X
+- domestic slave X
 - fugitive slave X
+- refugee slave X
+- manumitted slave X
+- manumission of slave X
+- X, slave
+- X took refuge
+- X claimed manumission
+- X asks for a Manumission Certificate
+- certificate may be granted to X
+- X is entitled to manumission
+- X was sent for repatriation
+- X wishes to be repatriated
+- X was recovered by authorities
+- X was kidnapped
+- X was stolen
+- X was forcibly taken away
+- X was sold and later escaped/recovered/rescued
 - X states he/she is a slave
 - X kept as a slave
-- X was kidnapped / stolen / forcibly taken away and later sold / recovered / traced
-- X entitled to freedom / given manumission certificate
-- X recovered by authorities / rescued / repatriated
-- 有 named anchor 的 relation subject，例如：
-  - Sarur's wife
-  - daughter of Muhammed
-  - son of Muhammed
-  但前提是该 relation person 本身就是被奴役、被掳、被恢复、被释放对象。
+- X was re-enslaved or threatened with re-enslavement
+- X was granted / is to be granted a Manumission Certificate
 
-三、不要保留这些人
+Also include named-anchor relation subjects, for example:
 
-以下人即使是人名，也不要进入最终 CSV：
+- Sarur's wife
+- daughter of Muhammed
+- son of Muhammed
+- wife of Almas named Khadduj
+- her daughter Saudah
+- his children named X and Y
 
-- owner / master
-- buyer / seller / slave dealer / broker / dallal
+But the following conditions must be met:
+
+- The relation person themselves must be the enslaved, kidnapped, recovered, released, manumitted, or repatriated subject.
+- The relation phrase must have a named anchor or a clear personal identifier.
+- If the OCR explicitly provides the person’s specific name, prefer the specific name and do not use only the relation label.
+- If no specific name is given but there is a clear named-anchor relation, and that relation person is themselves the subject, you may output the relation label.
+- Do not output generic relations such as his sister, the woman, the girl, three children, unless there is a named anchor and the person is truly a subject.
+
+5. People not to keep
+
+Do not include the following people in the final CSV, even if they are personal names:
+
+- owner
+- master
+- buyer
+- seller
+- slave dealer
+- broker
+- dallal
 - kidnapper
+- abductor
+- captor
 - witness
-- official / political agent / resident / secretary / ruler / sheikh
-- correspondent / signatory
-- complainant 或 relative anchor，除非他本人就是 slave subject
-- father / brother / son-in-law / husband / house owner，只作为关系锚点时不要抽为 subject
-- OCR header、letter recipient、sender、signature 里的官员名
-- 地名、机构名、船名、职衔
-- 泛称：the slave, the woman, the boy, three slaves, his sister, the girl
-- 没有 named anchor 的 relation phrase
-- OCR 表格错位产生的假名字，例如 “son of Age”
+- official
+- political agent
+- resident
+- secretary
+- ruler
+- sheikh
+- commander
+- captain
+- signatory
+- correspondent
+- letter sender
+- letter recipient
+- complainant, unless that person themselves is a slave subject
+- relative anchor, unless that person themselves is a slave subject
+- father / mother / brother / husband / son-in-law / house owner, when used only as a relationship anchor
+- master in “slave of X”
+- house owner in “traced to the house of X”
+- person in “kept in the house of X”
+- person in “purchased by X”
+- person in “sold by X”
+- person in “sold to X”
+- person in “complained to X”
+- person in “witnessed by X”
+- official names in OCR headers, footers, recipients, senders, or signatures
+- place names
+- institution names
+- ship names
+- titles or offices
+- generic descriptions:
+  - the slave
+  - the woman
+  - the boy
+  - the girl
+  - three slaves
+  - his sister
+  - his wife
+  - her daughter
+  - his children
+  If there is no named anchor, do not keep them.
+- false names caused by OCR table misalignment, for example:
+  - son of Age
+  - daughter of Years
+  - bin Date
+  - wife of No.
+  - names formed from column labels
 
-四、重点错误类型要修正
+6. Key error types to check and correct
 
-请特别检查并修正这些 pipeline 常见错误：
+Please especially check and correct the following common pipeline errors:
 
-1. 尾部名字误拆
-   - 例如 Faraj bin Said 被拆出 Said，Said 不应单独保留。
+1. Incorrectly split tail names
 
-2. owner / witness / complainant 被误保留
-   - 如果 X 只是说“我发现我妹妹被卖了”、“我可以找证人”、“我投诉某事”，不要把 X 当 slave subject。
-   - 真正 subject 可能是他的 sister / wife / daughter / son。
+- For example, if Faraj bin Said is split by the pipeline into:
+  - Faraj bin Said
+  - Said
+- If Said is only the tail part of the full name, it should not be kept separately.
+- Likewise:
+  - X bin Y
+  - X bint Y
+  - X daughter of Y
+  - X son of Y
+  - X al-Z
+  Do not treat Y or al-Z as a separate subject unless the OCR provides independent evidence that Y themselves is also a subject.
 
-3. house owner / master 被误保留
-   - “traced to the house of X”、“kept in the house of X”、“slave of X” 中的 X 通常不是 subject。
+2. Owner / witness / complainant wrongly retained
 
-4. relation label 要严格
-   - 保留 named-anchor relation subject。
-   - 不保留 generic relation phrase。
-   - 如果 OCR 明确给出具体名字，优先用具体名字，不要只用 relation label。
+- If X merely says “I found that my sister was sold,” “I complain about something,” or “I can find witnesses,” do not treat X as the slave subject.
+- The true subject may be the person’s sister / wife / daughter / son.
+- If the relative has no name, output a relation label only when the named-anchor relation rule is satisfied.
+- If the person is only an owner/master/dealer/witness, delete them.
 
-5. classifier false negative
-   - 即使 classify.json 说 should_extract=false，也要重新读英文 OCR。
-   - 如果 OCR 里有明确 slave / kidnapped / recovered / manumission subject，也要把该页加入最终 CSV。
-   - 不要因为原 pipeline 没有 names.json 就跳过该页。
+3. House owner / master wrongly retained
 
-6. surface name vs normalized name
-   - 最终名字应尽量忠实 OCR 中出现的 surface form。
-   - 不要因为 normalized form 不完全匹配 OCR 就删掉。
-   - 例如 OCR 是 “Ibn”，不要先改成 “bin” 再做 span 判断。
-   - 如果同一人跨页有明显 OCR 拼写变体，仍按当前页 OCR 里的名字记录，除非有明显标准写法反复出现。
+In structures such as:
 
-五、最终 CSV 输出格式
+- “traced to the house of X”
+- “kept in the house of X”
+- “slave of X”
+- “belonging to X”
+- “property of X”
+- “purchased by X”
+- “sold to X”
+- “sold by X”
 
-最终只输出一个 CSV 文件，文件名：
+X is usually not the subject.
+Only keep X if the same page contains separate evidence that X themselves is also a slave/manumission subject.
+
+4. Relation labels must be strict
+
+- Keep named-anchor relation subjects.
+- Do not keep generic relation phrases.
+- If the OCR provides a specific name, output the specific name.
+- If the OCR only says “his wife is also a slave of Sagar,” and the husband is a named subject, you may output:
+  Almas' wife
+  Or if the same page gives the name Khadduj, output:
+  Khadduj
+- If the OCR only says “his sister was sold,” and there is no named anchor or the anchor is unclear, do not output it.
+- If the OCR says “Ramazan reports that his brother X has been taken...,” the subject is X, not Ramazan, unless Ramazan himself is also an enslaved subject.
+
+5. Classifier false negatives
+
+- Even if classify.json says should_extract=false, reread the English OCR.
+- If the OCR contains a clear slave / kidnapped / recovered / manumission subject, include that page in the final CSV.
+- Do not skip a page just because the original pipeline has no names.json.
+
+6. Pipeline false positives
+
+- If names.json extracted a personal name, but the OCR shows the person is only an owner, official, witness, dealer, complainant, relative anchor, sender, recipient, signatory, or ruler, delete them.
+- If names.json extracted a place name, ship name, institution name, or title, delete it.
+- If names.json extracted an OCR-misaligned false name, delete it.
+
+7. Surface name vs. normalized name
+
+- Final names should remain as faithful as possible to the OCR surface form.
+- Do not delete a name just because the normalized form does not exactly match the OCR.
+- Do not first convert the OCR surface form into another standardized form before judging the span.
+- For example, if the OCR says “Ibn,” do not first change it to “bin” for span validation.
+- If the same person appears across pages with clear OCR spelling variants, record the name according to the current page’s OCR.
+- Only use the fuller or more standard form when the same page clearly contains that fuller and more reliable form.
+
+8. Index / table-of-contents pages
+
+- If an index page explicitly says:
+  - Manumission of slave X
+  - Repatriation of X
+  - Manumission of slaves X, Y, Z
+  These names may be counted as occurrences for that index page.
+- However, if the index OCR is extremely messy or names appear misaligned, mark them as uncertain in audit_report.md.
+- Do not extract owners/masters/dealers from index pages.
+
+9. Duplicate pages / duplicated OCR text
+
+- Some PAGE blocks contain the same English content twice.
+- Do not output the same name twice on the same page.
+- If a page contains two OCR copies, one clearer and one worse, rely on the clearer English text.
+- If the two OCR copies have slightly different spellings for the same subject, prefer the clearer, fuller, more contextually reliable surface form.
+
+7. Required page-by-page manual workflow
+
+Please process as follows:
+
+1. Read the complete .txt file.
+2. Split it into PAGE blocks.
+3. For each page:
+   - Decide whether it contains usable English OCR.
+   - Skip pure Arabic or obvious gibberish pages.
+   - Read the English content.
+   - Determine whether there is a slave / kidnapped / recovered / manumission / repatriation subject.
+   - Extract candidate subjects from the current OCR page.
+   - Cross-check against the corresponding classify/names records in the pipeline CSV.
+   - Delete false positives.
+   - Add false negatives missed by the pipeline.
+   - Deduplicate within the same page.
+4. Generate the final rows.
+5. Generate the audit report.
+6. Generate the two downloadable files.
+
+8. Final CSV output format
+
+The final output must be one CSV file named:
 
 corrected_slave_names_by_page_simple.csv
 
-格式必须是：无表头、两列、英文逗号分隔。
+Format requirements:
 
-每行格式：
+- It must have a header.
+- The header must be exactly:
+  Name,Page
+- It must contain only two columns.
+- Use English comma separation.
+- First column name: Name
+- Second column name: Page
+- First column content: name or necessary named-anchor relation label.
+- Second column content: page number, digits only.
+- Use UTF-8 encoding.
+- Do not output evidence.
+- Do not output confidence.
+- Do not output notes.
+- Do not output role.
+- Do not output JSON.
+- Do not output a Markdown table.
+- Do not paste the entire CSV content into the chat.
+- The CSV content must contain only two columns: Name and Page.
+- If a name contains an English comma, double quote, or newline, it must follow standard CSV escaping rules:
+  - Enclose the field in double quotes.
+  - Escape internal double quotes as two double quotes.
 
-名字,页码
+Example rows:
 
-例如：
-
+Name,Page
 Faraj bin Said,6
 Faraj bin Said,8
 Abdulla,13
@@ -127,44 +337,60 @@ Sa'idah,180
 Sa'idah,188
 Sa'idah,192
 
-具体规则：
+9. audit_report.md output format
 
-- 每一行一个 slave / enslaved / kidnapped / recovered / manumission subject occurrence。
-- 第一列是名字或必要的 named-anchor relation label。
-- 第二列是页码，只写数字，不写 p006。
-- 同一个人如果在多页出现，每页单独一行。
-- 同一页多个 subject，就多行。
-- 不要输出 owner、master、witness、official、slave dealer、complainant、house owner、father anchor、brother anchor。
-- 不要输出 evidence。
-- 不要输出 confidence。
-- 不要输出 notes。
-- 不要输出 role。
-- 不要输出 JSON。
-- 不要输出 Markdown 表格。
-- CSV 文件不要有表头。
-- CSV 文件内容只能是两列：name 和 page。
-- 如果名字中出现英文逗号、双引号或换行，必须按标准 CSV 规则给该字段加双引号，并把字段内部双引号转义为两个双引号。
-- CSV 文件建议使用 UTF-8 编码。
+In addition to corrected_slave_names_by_page_simple.csv, also generate:
 
-六、同时输出一个简短审计报告
+audit_report.md
 
-除了 corrected_slave_names_by_page_simple.csv，再输出一个 audit_report.md，简短说明：
+The audit report should be brief but useful, and must include at least:
 
-- 总共抽出多少行
-- 涉及多少页
-- 删除了哪些明显 false positives
-- 新增了哪些原 pipeline 漏掉的人
-- 哪些名字不确定，需要人工复核
-- 主要判断规则和错误模式
+- Total number of extracted rows.
+- Number of pages involved.
+- A list of obvious false positives removed.
+  - For example: owner/master, official, witness, dealer, sender, recipient, signature, place name, ship name, OCR-misaligned false name.
+- A list of people newly added who were missed by the original pipeline.
+  - Especially pages where classify=false but the OCR clearly contains a subject.
+- A list of uncertain names requiring human review.
+  - Including unclear OCR spellings, incomplete relation labels, and possible misaligned index names.
+- A short explanation of the main judgment rules.
+- A short explanation of the main error patterns found.
+- Do not include the full CSV in audit_report.md.
+- You may cite page numbers and names, but do not use complex tables.
+- Write the report in Chinese.
 
-七、最终回复格式
+10. Quality checks
 
-最终回复只需要给：
+Before generating the files, perform the following checks:
 
-1. corrected_slave_names_by_page_simple.csv 的下载链接
-2. audit_report.md 的下载链接
-3. 一句简短总结
+- Did you read all PAGE blocks?
+- Did you avoid relying only on keyword search?
+- Did you avoid relying only on classify.json or names.json?
+- Did you check pages where classify=false?
+- Did you delete owners/masters/witnesses/officials/dealers?
+- Did you avoid incorrectly split tail names?
+- Did you avoid place names, ship names, and institution names?
+- Did you avoid generic phrases?
+- Did you deduplicate the same subject on the same page?
+- Did you keep cross-page occurrences separately?
+- Does the CSV have a header?
+- Is the header exactly Name,Page?
+- Does the CSV have only two columns?
+- Are page numbers digits only?
+- Did you generate corrected_slave_names_by_page_simple.csv?
+- Did you generate audit_report.md?
+- Did you avoid pasting the full CSV content into the chat?
 
-不要把 CSV 全部内容直接贴在聊天里。
-不要输出 JSON。
-不要输出 Markdown 表格。
+11. Final response format
+
+The final response should only include:
+
+1. A download link for corrected_slave_names_by_page_simple.csv
+2. A download link for audit_report.md
+3. One brief summary sentence
+
+Do not paste the full CSV content into the chat.
+Do not output JSON.
+Do not output a Markdown table.
+Make sure the final CSV follows the required two-column format, with the first row exactly Name,Page.
+```

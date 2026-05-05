@@ -263,6 +263,110 @@ class PipelineMockedTests(unittest.TestCase):
             self.assertIn("Name,Page", names_csv.read_text(encoding="utf-8"))
             self.assertIn("Mariam,1", names_csv.read_text(encoding="utf-8"))
 
+    def test_pipeline_continue_after_name_review_skips_ingest_ocr_classify_and_names(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake_settings = mock.Mock(
+                logs_root=root / "logs",
+                input_pdfs_dir=root / "input_pdfs",
+                OCR_MODEL="ocr-mock",
+                OLLAMA_MODEL="text-mock",
+            )
+            fake_settings.input_pdfs_dir.mkdir(parents=True, exist_ok=True)
+            paths = mock.Mock()
+            paths.doc_id = "demo_continue_review"
+            paths.pdf = fake_settings.input_pdfs_dir / "demo_continue_review.pdf"
+            paths.pages_dir = root / "pages" / "demo_continue_review"
+            paths.ocr_dir = root / "ocr_text" / "demo_continue_review"
+            paths.inter_dir = root / "intermediate" / "demo_continue_review"
+            paths.output_dir = root / "output" / "demo_continue_review"
+            paths.manifest = lambda: paths.pages_dir / "manifest.json"
+            paths.page_image = lambda page: paths.pages_dir / f"p{page:03d}.png"
+            paths.ocr_text = lambda page: paths.ocr_dir / f"p{page:03d}.txt"
+            paths.classify = lambda page: paths.inter_dir / f"p{page:03d}.classify.json"
+            paths.names = lambda page: paths.inter_dir / f"p{page:03d}.names.json"
+            paths.meta = lambda page: paths.inter_dir / f"p{page:03d}.meta.json"
+            paths.places = lambda page: paths.inter_dir / f"p{page:03d}.places.json"
+            for folder in (paths.pages_dir, paths.ocr_dir, paths.inter_dir, paths.output_dir, fake_settings.logs_root):
+                folder.mkdir(parents=True, exist_ok=True)
+            paths.pdf.write_bytes(b"%PDF-1.4 fake")
+            paths.ocr_text(1).write_text("Mariam", encoding="utf-8")
+            paths.ocr_text(2).write_text("Salama", encoding="utf-8")
+            write_json_atomic(paths.classify(1), {"page": 1, "should_extract": True, "report_type": "statement"})
+            write_json_atomic(
+                paths.classify(2),
+                {"page": 2, "should_extract": True, "report_type": "statement", "name_review_override": True},
+            )
+            write_json_atomic(paths.names(1), {"page": 1, "named_people": [{"name": "Mariam"}]})
+            write_json_atomic(
+                paths.names(2),
+                {"page": 2, "named_people": [{"name": "Salama"}], "name_review_override": True},
+            )
+            called_stages: list[str] = []
+
+            def fake_run_stage(stage, doc_id, **kwargs):
+                if stage in {"ingest_ocr", "classify", "names"}:
+                    raise AssertionError(f"{stage} should not run after name review continue")
+                called_stages.append(stage)
+                if stage == "meta":
+                    for page, name in ((1, "Mariam"), (2, "Salama")):
+                        write_json_atomic(paths.meta(page), {"page": page, "rows": [{"Name": name, "Page": page}]})
+                        kwargs["progress"]("done", page, 2, paths.ocr_text(page))
+                    return _stage_summary("meta", [(1, "done"), (2, "done")])
+                if stage == "places":
+                    for page, name in ((1, "Mariam"), (2, "Salama")):
+                        write_json_atomic(paths.places(page), {"page": page, "rows": [{"Name": name, "Page": page}]})
+                        kwargs["progress"]("done", page, 2, paths.ocr_text(page))
+                    return _stage_summary("places", [(1, "done"), (2, "done")])
+                if stage == "aggregate":
+                    (paths.output_dir / "Detailed info.csv").write_text("Name,Page\nMariam,1\nSalama,2\n", encoding="utf-8")
+                    return {"status": "complete"}
+                raise AssertionError(stage)
+
+            with (
+                mock.patch.object(job_store, "settings", fake_settings),
+                mock.patch.object(pipeline, "settings", fake_settings),
+                mock.patch.object(pipeline, "doc_paths", return_value=paths),
+                mock.patch.object(name_review, "doc_paths", return_value=paths),
+                mock.patch.object(pipeline, "run_stage", side_effect=fake_run_stage),
+            ):
+                job = job_store.create_job(
+                    "demo_continue_review",
+                    source_pdf="demo_continue_review.pdf",
+                    ocr_model="ocr-mock",
+                    text_model="text-mock",
+                )
+                job_store.ensure_pages(job, 2)
+                for page in (1, 2):
+                    job_store.mark_stage(job, "ingest", page, state="done", detail="previous ingest")
+                    job_store.mark_stage(job, "ocr", page, state="done", detail="previous OCR")
+                    job_store.mark_stage(job, "classify", page, state="done", detail="previous classify")
+                job_store.mark_stage(job, "names", 1, state="done", detail="previous names")
+                job_store.mark_stage(job, "names", 2, state="skipped", detail="previous classify skip")
+                job_store.mark_stage(job, "meta", 2, state="skipped", detail="previous classify skip")
+                job_store.mark_stage(job, "places", 2, state="skipped", detail="previous classify skip")
+                job["status"] = "awaiting_name_review"
+                job["name_review"] = {"status": "uploaded"}
+                job_store.save_job(job)
+
+                result = pipeline.run_document(
+                    job["job_id"],
+                    "demo_continue_review",
+                    options={
+                        "source_pdf": str(paths.pdf),
+                        "resume": True,
+                        "name_review_completed": True,
+                        "continue_after_name_review": True,
+                    },
+                )
+
+            self.assertEqual(called_stages, ["meta", "places", "aggregate"])
+            self.assertEqual(result["status"], "done")
+            self.assertEqual(result["pages"][1]["names"]["state"], "done")
+            self.assertEqual(result["pages"][1]["meta"]["state"], "done")
+            self.assertEqual(result["pages"][1]["places"]["state"], "done")
+            self.assertFalse(paths.page_image(1).exists())
+
 
 if __name__ == "__main__":
     unittest.main()
