@@ -36,7 +36,7 @@ Available now:
 - `aggregator` has a standalone local UI at `http://127.0.0.1:5109/aggregate/`.
 - `ocr` can preview the preprocessing pipeline for rendered page PNGs.
 - `ocr` has a CLI and a standalone local UI at `http://127.0.0.1:5103/ocr/`.
-- `ocr` writes durable text artifacts under `data/ocr_text/<doc_id>/` when the OCR model is available.
+- `ocr` writes durable English/Latin-script ASCII text artifacts under `data/ocr_text/<doc_id>/` when the OCR model is available.
 - `page_classifier` keeps OCR pages with visible personal names, skips pages without visible personal names, and classifies report types.
 - `page_classifier` has a CLI and a standalone local UI at `http://127.0.0.1:5104/classify/`.
 - `page_classifier` writes durable JSON artifacts under `data/intermediate/<doc_id>/pNNN.classify.json`.
@@ -53,11 +53,11 @@ Available now:
 - `place_extractor` can download the current page result or the selected person's final rows directly as CSV from the standalone UI.
 - `place_extractor` writes durable JSON artifacts under `data/intermediate/<doc_id>/pNNN.places.json`.
 - `place_extractor` only lists documents and pages that already have OCR text, `should_extract=true`, and non-empty `pNNN.names.json`.
-- `orchestrator` can run a document end to end from a standalone dashboard at `http://127.0.0.1:5110/orchestrate/`.
+- `orchestrator` can run a document through names, pause for name review, then continue end to end from a standalone dashboard at `http://127.0.0.1:5110/orchestrate/`.
 - `orchestrator` renders each PDF page in memory and OCRs it immediately, so normal end-to-end runs save only `data/ocr_text/<doc_id>/pNNN.txt` and do not create new page PNGs.
 - `orchestrator` persists `data/logs/<doc_id>/job.json`, `pipeline.log`, and `events.jsonl`.
 - `orchestrator` server-renders the current job summary, per-page table, and live log on first load, then keeps the page current through SSE with polling fallback and visible connection status.
-- `orchestrator` can pause after the current stage, resume from saved artifacts, clear generated results for a document while keeping the source PDF, and preview/download final CSV outputs directly in the dashboard.
+- `orchestrator` can pause after the current stage, resume from saved artifacts, generate downloadable name-review text/CSV files after `name_extractor`, accept an optional corrected `Name,Page` CSV before metadata/places, clear generated results for a document while keeping the source PDF, and preview/download final CSV outputs directly in the dashboard.
 - `orchestrator` automatically marks stale `running` jobs as `paused` after service restart or lost worker thread so they can be resumed safely.
 
 Not available yet:
@@ -691,6 +691,8 @@ p002.txt: Upload Two
 
 The full OCR call can take a while because it loads the vision model and sends one or more images per page to Ollama. The fast Phase 3 dev loop is the preprocessing preview plus mocked unit tests; the full live-model smoke test only needs to be repeated after OCR model, prompt, preprocessing, or runtime changes.
 
+Current OCR output is English/Latin-script only and plain ASCII. The prompt tells the vision model to ignore non-English scripts, and `cleanup_ocr_text` also removes non-ASCII scripts after the model response. Existing OCR text files are not rewritten automatically; rerun OCR for a document when you need this filtering applied to old outputs.
+
 ## 15. Phase 4.1 Page Classifier Testing
 
 Build and run the standalone classifier UI:
@@ -1123,6 +1125,7 @@ The dashboard supports:
 - automatic coercion of stale `running` jobs to `paused` after service restart or worker loss
 - a clear-results control that removes generated pages if present, OCR text, intermediate JSON, outputs, logs, and audit artifacts while keeping the source PDF
 - final output preview and download cards for `Detailed info.csv`, `name place.csv`, and `run_status.csv`
+- a name-review checkpoint after `name_extractor`, with downloads for `name_review_combined_text.txt` and `name_review_names.csv`, plus an optional corrected `Name,Page` CSV upload before continuing
 
 Compose serves the standalone orchestrator with a threaded Gunicorn command:
 
@@ -1472,7 +1475,7 @@ This avoids keeping the text model and OCR model in VRAM at the same time on a 1
 |---|---|
 | Input PDFs | `data/input_pdfs/` |
 | Rendered page PNGs | `data/pages/<doc_id>/` for standalone ingest/debug runs; new orchestrator runs do not create them |
-| OCR text | `data/ocr_text/<doc_id>/pNNN.txt` |
+| OCR text | `data/ocr_text/<doc_id>/pNNN.txt` English/Latin-script ASCII output |
 | Intermediate JSON | `data/intermediate/<doc_id>/` |
 | Final CSVs | `data/output/<doc_id>/` |
 | Logs and job state | `data/logs/<doc_id>/` |

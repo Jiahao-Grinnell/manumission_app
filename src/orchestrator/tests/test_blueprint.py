@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import tempfile
 import unittest
 import json
@@ -9,6 +10,7 @@ from unittest import mock
 
 from orchestrator import blueprint as orch_blueprint
 from orchestrator import job_store
+from orchestrator import name_review
 from orchestrator.standalone import create_app
 
 
@@ -185,6 +187,77 @@ class OrchestratorBlueprintTests(unittest.TestCase):
                 self.assertIn(b"Name,Page", download.data)
                 download.close()
 
+    def test_continue_name_review_applies_uploaded_csv_and_restarts_worker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake_settings = mock.Mock(
+                DATA_ROOT=root,
+                logs_root=root / "logs",
+                input_pdfs_dir=root / "input_pdfs",
+                OCR_MODEL="ocr-mock",
+                OLLAMA_MODEL="text-mock",
+            )
+            doc_id = "demo_review"
+            paths = _doc_paths(root, doc_id)
+            for folder in (fake_settings.input_pdfs_dir, paths.ocr_dir, paths.inter_dir, paths.output_dir):
+                folder.mkdir(parents=True, exist_ok=True)
+            paths.pdf.write_bytes(b"%PDF-1.4 fake")
+            paths.ocr_text(1).write_text("Mariam and Fatima", encoding="utf-8")
+            paths.ocr_text(2).write_text("Salama", encoding="utf-8")
+            (paths.inter_dir / "p001.classify.json").write_text(
+                '{"page":1,"should_extract":true,"report_type":"statement"}',
+                encoding="utf-8",
+            )
+            (paths.inter_dir / "p002.classify.json").write_text(
+                '{"page":2,"should_extract":false,"skip_reason":"index","report_type":"correspondence"}',
+                encoding="utf-8",
+            )
+            (paths.inter_dir / "p001.names.json").write_text(
+                '{"page":1,"named_people":[{"name":"Mariam"}]}',
+                encoding="utf-8",
+            )
+            paths.meta(1).write_text('{"stale":true}', encoding="utf-8")
+            paths.places(1).write_text('{"stale":true}', encoding="utf-8")
+            (paths.output_dir / "Detailed info.csv").write_text("Name,Page\nMariam,1\n", encoding="utf-8")
+
+            with (
+                mock.patch.object(orch_blueprint, "settings", fake_settings),
+                mock.patch.object(job_store, "settings", fake_settings),
+                mock.patch.object(orch_blueprint, "doc_paths", side_effect=lambda current_doc_id: _doc_paths(root, current_doc_id)),
+                mock.patch.object(name_review, "doc_paths", side_effect=lambda current_doc_id: _doc_paths(root, current_doc_id)),
+                mock.patch.object(orch_blueprint, "_start_worker") as start_worker,
+            ):
+                app = create_app()
+                client = app.test_client()
+                job = job_store.create_job(doc_id)
+                job["status"] = "awaiting_name_review"
+                job["name_review"] = {"status": "ready"}
+                job_store.save_job(job)
+
+                response = client.post(
+                    f"/orchestrate/continue-name-review/{job['job_id']}",
+                    data={"names_csv": (io.BytesIO(b"Name,Page\nFatima,1\nSalama,2\n"), "corrected.csv")},
+                    content_type="multipart/form-data",
+                )
+
+                self.assertEqual(response.status_code, 200)
+                payload = response.get_json()
+                self.assertEqual(payload["name_review"]["status"], "uploaded")
+                self.assertEqual(payload["name_review"]["name_rows"], 2)
+                start_worker.assert_called_once()
+                self.assertTrue(start_worker.call_args.args[2]["name_review_completed"])
+
+            updated_page1 = json.loads(paths.names(1).read_text(encoding="utf-8"))
+            updated_page2 = json.loads(paths.names(2).read_text(encoding="utf-8"))
+            classify_page2 = json.loads(paths.classify(2).read_text(encoding="utf-8"))
+            self.assertEqual([item["name"] for item in updated_page1["named_people"]], ["Fatima"])
+            self.assertEqual([item["name"] for item in updated_page2["named_people"]], ["Salama"])
+            self.assertTrue(classify_page2["should_extract"])
+            self.assertTrue((paths.output_dir / "name_review_uploaded_names.csv").exists())
+            self.assertFalse(paths.meta(1).exists())
+            self.assertFalse(paths.places(1).exists())
+            self.assertFalse((paths.output_dir / "Detailed info.csv").exists())
+
     def test_orphaned_running_job_is_marked_paused_on_status(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -263,6 +336,43 @@ class OrchestratorBlueprintTests(unittest.TestCase):
                 self.assertIn("ocr page 001: done.", body)
                 self.assertIn("p001", body)
                 self.assertIn("state-running", body)
+
+    def test_index_server_renders_name_review_checkpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake_settings = mock.Mock(
+                DATA_ROOT=root,
+                logs_root=root / "logs",
+                input_pdfs_dir=root / "input_pdfs",
+                OCR_MODEL="ocr-mock",
+                OLLAMA_MODEL="text-mock",
+            )
+            doc_id = "demo_review_render"
+            paths = _doc_paths(root, doc_id)
+            paths.output_dir.mkdir(parents=True, exist_ok=True)
+            (paths.output_dir / "name_review_combined_text.txt").write_text("========== PAGE 001 ==========\nOCR", encoding="utf-8")
+            (paths.output_dir / "name_review_names.csv").write_text("Name,Page\nMariam,1\n", encoding="utf-8")
+
+            with (
+                mock.patch.object(orch_blueprint, "settings", fake_settings),
+                mock.patch.object(job_store, "settings", fake_settings),
+                mock.patch.object(orch_blueprint, "doc_paths", side_effect=lambda current_doc_id: _doc_paths(root, current_doc_id)),
+            ):
+                app = create_app()
+                client = app.test_client()
+                job = job_store.create_job(doc_id)
+                job["status"] = "awaiting_name_review"
+                job["name_review"] = {"status": "ready", "message": "Review extracted names."}
+                job_store.save_job(job)
+
+                response = client.get(f"/orchestrate/?job_id={job['job_id']}")
+                self.assertEqual(response.status_code, 200)
+                body = response.get_data(as_text=True)
+                self.assertIn("Name Review", body)
+                self.assertIn("Review extracted names.", body)
+                self.assertIn("name_review_combined_text.txt", body)
+                self.assertIn("name_review_names.csv", body)
+                self.assertNotIn('id="name-review-card" hidden', body)
 
 
 if __name__ == "__main__":

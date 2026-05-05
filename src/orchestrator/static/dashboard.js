@@ -125,6 +125,11 @@
     var logTail = byId("log-tail");
     var outputSummary = byId("output-summary");
     var outputResults = byId("output-results");
+    var nameReviewCard = byId("name-review-card");
+    var nameReviewStatus = byId("name-review-status");
+    var nameReviewFiles = byId("name-review-files");
+    var nameReviewForm = byId("name-review-form");
+    var continueNameReviewButton = byId("continue-name-review");
     var jobList = byId("job-list");
     var uploadForm = byId("upload-form");
     var existingForm = byId("existing-form");
@@ -175,6 +180,10 @@
 
     function outputsUrl(jobId) {
       return window.__ORCH_OUTPUTS_URL__.replace("__JOB_ID__", encodeURIComponent(jobId));
+    }
+
+    function continueNameReviewUrl(jobId) {
+      return window.__ORCH_CONTINUE_NAME_REVIEW_URL__.replace("__JOB_ID__", encodeURIComponent(jobId));
     }
 
     function stageStateClass(state) {
@@ -391,6 +400,48 @@
       outputResults.innerHTML = html;
     }
 
+    function renderNameReview(payload) {
+      var review = payload.name_review || {};
+      var files = review.files || [];
+      var show = Boolean(review.status || files.length || payload.status === "awaiting_name_review");
+      var html = "";
+      var index;
+      var file;
+      var canContinue = payload.status === "awaiting_name_review" || review.status === "ready";
+
+      if (!nameReviewCard) {
+        return;
+      }
+      nameReviewCard.hidden = !show;
+      if (!show) {
+        return;
+      }
+      if (nameReviewStatus) {
+        nameReviewStatus.textContent = review.message || "Review extracted subject names before metadata, places, and aggregation continue.";
+      }
+      if (nameReviewFiles) {
+        if (!files.length) {
+          html = '<div class="empty">No name review files yet.</div>';
+        } else {
+          for (index = 0; index < files.length; index += 1) {
+            file = files[index];
+            html += '<section class="review-file">';
+            html += '<div><strong>' + escapeHtml(file.label || file.key) + '</strong>';
+            html += '<span>' + escapeHtml(file.size_bytes || 0) + ' bytes</span></div>';
+            html += '<a class="download-link" href="' + escapeHtml(file.download_url || "#") + '">Download</a>';
+            html += '</section>';
+          }
+        }
+        nameReviewFiles.innerHTML = html;
+      }
+      if (continueNameReviewButton) {
+        continueNameReviewButton.disabled = !currentJobId || !canContinue;
+      }
+      if (nameReviewForm) {
+        nameReviewForm.classList.toggle("muted", !canContinue);
+      }
+    }
+
     function renderJobList(jobs) {
       var html = "";
       var index;
@@ -422,7 +473,7 @@
 
       if (resumeButton) {
         resumeButton.dataset.docId = docId;
-        resumeButton.disabled = !docId || active;
+        resumeButton.disabled = !docId || active || status === "awaiting_name_review";
       }
       if (pauseButton) {
         pauseButton.dataset.jobId = jobId;
@@ -469,6 +520,7 @@
       renderProgress(payload);
       renderRows(payload);
       renderLog(payload);
+      renderNameReview(payload);
       syncControls(payload);
       syncPolling();
       syncHistory(currentJobId);
@@ -708,6 +760,24 @@
             return;
           }
           window.location.assign(window.__ORCH_INDEX_URL__);
+        });
+      });
+    }
+
+    if (nameReviewForm) {
+      nameReviewForm.addEventListener("submit", function (event) {
+        var body;
+        event.preventDefault();
+        if (!currentJobId) {
+          return;
+        }
+        body = new FormData(nameReviewForm);
+        requestJson(continueNameReviewUrl(currentJobId), { method: "POST", body: body }, function (error, payload, response) {
+          if (error || !response || !response.ok || !payload) {
+            showClientError("Name review continue request failed.", error || new Error("Name review continue request failed."));
+            return;
+          }
+          window.location.assign(window.__ORCH_INDEX_URL__ + "?job_id=" + encodeURIComponent(payload.job_id));
         });
       });
     }

@@ -197,6 +197,44 @@
             <pre id="log-tail">{% if selected_job.get('log_tail') %}{{ selected_job.get('log_tail', [])|join('\n') }}{% else %}No log output yet.{% endif %}</pre>
           </article>
 
+          {% set name_review = selected_job.get('name_review', {}) if selected_job else {} %}
+          {% set name_review_files = name_review.get('files', []) if name_review else [] %}
+          {% set show_name_review = selected_job.get('status') == 'awaiting_name_review' or name_review.get('status') or name_review_files %}
+          <article class="card name-review-card" id="name-review-card" {% if not show_name_review %}hidden{% endif %}>
+            <header>
+              <div>
+                <h2>Name Review</h2>
+                <p id="name-review-status">{{ name_review.get('message') or 'Review extracted subject names before metadata, places, and aggregation continue.' }}</p>
+              </div>
+            </header>
+            <div class="name-review-body">
+              <div class="review-file-grid" id="name-review-files">
+                {% if name_review_files %}
+                  {% for file in name_review_files %}
+                    <section class="review-file">
+                      <div>
+                        <strong>{{ file.get('label') or file.get('key') }}</strong>
+                        <span>{{ file.get('size_bytes') or 0 }} bytes</span>
+                      </div>
+                      {% if file.get('download_url') %}
+                        <a class="download-link" href="{{ file.get('download_url') }}">Download</a>
+                      {% endif %}
+                    </section>
+                  {% endfor %}
+                {% else %}
+                  <div class="empty">No name review files yet.</div>
+                {% endif %}
+              </div>
+              <form id="name-review-form" class="review-form">
+                <label>
+                  Corrected Names CSV
+                  <input type="file" name="names_csv" accept=".csv,text/csv">
+                </label>
+                <button type="submit" id="continue-name-review" {% if selected_job.get('status') != 'awaiting_name_review' and name_review.get('status') != 'ready' %}disabled{% endif %}>Continue Pipeline</button>
+              </form>
+            </div>
+          </article>
+
           <article class="card output-card">
             <header>
               <div>
@@ -224,6 +262,7 @@
       window.__ORCH_PAUSE_URL__ = "{{ url_for('orchestrator.pause', job_id='__JOB_ID__') }}";
       window.__ORCH_CANCEL_URL__ = "{{ url_for('orchestrator.cancel', job_id='__JOB_ID__') }}";
       window.__ORCH_CLEAR_RESULTS_URL__ = "{{ url_for('orchestrator.clear_results', doc_id='__DOC_ID__') }}";
+      window.__ORCH_CONTINUE_NAME_REVIEW_URL__ = "{{ url_for('orchestrator.continue_name_review', job_id='__JOB_ID__') }}";
       window.__ORCH_STREAM_URL__ = "{{ url_for('orchestrator.stream', job_id='__JOB_ID__') }}";
       window.__ORCH_OUTPUTS_URL__ = "{{ url_for('orchestrator.outputs', job_id='__JOB_ID__') }}";
       window.__ORCH_INDEX_URL__ = "{{ url_for('orchestrator.index') }}";

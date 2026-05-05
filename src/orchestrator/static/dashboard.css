@@ -189,7 +189,8 @@ select {
 
 .summary-card,
 .table-card,
-.log-card {
+.log-card,
+.name-review-card {
   padding-bottom: 18px;
 }
 
@@ -371,7 +372,8 @@ th {
 }
 
 .output-summary,
-.output-grid {
+.output-grid,
+.name-review-body {
   padding: 16px 18px 0;
 }
 
@@ -403,6 +405,44 @@ th {
 .output-grid {
   display: grid;
   gap: 14px;
+}
+
+.review-file-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.review-file {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  border: 1px solid #e8dcc9;
+  border-radius: 16px;
+  background: #fffcf6;
+  padding: 12px 14px;
+}
+
+.review-file div {
+  display: grid;
+  gap: 4px;
+}
+
+.review-file span {
+  color: #6a5e50;
+  font-size: 0.86rem;
+}
+
+.review-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: end;
+  margin-top: 14px;
+}
+
+.review-form.muted {
+  opacity: 0.72;
 }
 
 .output-file {
@@ -475,7 +515,8 @@ th {
   .workspace,
   .launch-grid,
   .hero,
-  .summary-grid {
+  .summary-grid,
+  .review-form {
     grid-template-columns: 1fr;
   }
 }

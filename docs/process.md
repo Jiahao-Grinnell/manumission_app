@@ -167,12 +167,13 @@ Milestone M2: three modules can run independently and each has a visible UI. Oll
 
 OCR is the first LLM module and the heaviest vision-processing stage, so it gets its own phase.
 
-Status: implemented on 2026-04-20. The module exposes preprocessing, single-page OCR, whole-folder OCR, status, debug, and text routes under `/ocr/*`; has a CLI; and has a standalone UI at `http://127.0.0.1:5103/ocr/` when started with the `ocr` profile.
+Status: implemented on 2026-04-20. The module exposes preprocessing, single-page OCR, whole-folder OCR, status, debug, and text routes under `/ocr/*`; has a CLI; and has a standalone UI at `http://127.0.0.1:5103/ocr/` when started with the `ocr` profile. As of 2026-05-05, OCR output is constrained to visible English/Latin-script text and normalized to plain ASCII; non-English-only pages should be saved as `[OCR_EMPTY]`.
 
 ### Tasks
 
 - Split image preprocessing from `glm_ocr_ollama.py` into `preprocessing.py`: `enhance_gray`, `deskew`, `crop_foreground`, `split_vertical_with_overlap`.
 - Implement `core.py` with the `OllamaClient` vision endpoint.
+- Keep the OCR prompt and `cleanup_ocr_text` aligned: saved OCR must ignore non-English scripts, retain only English/Latin-script text, normalize accents and smart punctuation to ASCII, and emit `[OCR_EMPTY]` when no readable English/Latin-script text remains.
 - Use `docker/ocr.Dockerfile`, including opencv.
 - Reuse resume logic such as `should_skip_existing`.
 - Build a standalone UI:
@@ -216,7 +217,7 @@ docker compose run --rm ocr python -m modules.ocr.cli \
   --max_new_tokens 1200
 ```
 
-Expected output: `data/ocr_text/upload_fixture/manifest.json` reports `status: complete`, `completed_pages: 2`, and writes `p001.txt` plus `p002.txt`.
+Expected output: `data/ocr_text/upload_fixture/manifest.json` reports `status: complete`, `completed_pages: 2`, and writes `p001.txt` plus `p002.txt`. Saved OCR text should contain only English/Latin-script ASCII content.
 
 Then open the OCR UI, click a page, and visually inspect preprocessing artifacts and OCR output.
 
@@ -517,6 +518,7 @@ The project is split into seven phases, each with a clear demoable result. This 
 - [x] OCR UI shows the five-step preprocessing strip for a selected page.
 - [x] Whole-folder OCR code path writes to `data/ocr_text/` and is covered by mocked unit tests.
 - [x] OCR text files are visible in the UI and exposed through `/ocr/text/<doc_id>/<page>`.
+- [x] OCR cleanup filters non-English scripts and normalizes retained Latin-script text to ASCII.
 - [x] Resume behavior works.
 - [x] Full OCR smoke test with `glm-ocr:latest` downloaded and loaded in runtime Ollama.
 
@@ -554,7 +556,7 @@ The project is split into seven phases, each with a clear demoable result. This 
 ## Common Pitfalls
 
 1. **Do not write business logic before Phase 1**. A weak foundation causes continuous rework.
-2. **OCR prompts are unstable**. Vision models may return markdown fences or extra explanations. Preserve the original `cleanup_ocr_text` handling.
+2. **OCR prompts are unstable**. Vision models may return markdown fences, extra explanations, or non-English script text. Preserve `cleanup_ocr_text`, including the English/Latin-script ASCII filter.
 3. **LLM JSON often has missing or extra fields**. Preserve the `OllamaClient.generate_json` fallback that repairs bad JSON with a repair prompt.
 4. **Paths inside containers are always `/data/...`**. Do not hard-code host paths in Python; use `shared/config.py`.
 5. **Windows line endings**. If the original `compose.yaml` uses `\r\n`, normalize to LF during migration to avoid strange docker-compose errors.

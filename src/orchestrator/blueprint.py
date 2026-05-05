@@ -16,6 +16,7 @@ from shared.config import settings
 from shared.paths import doc_paths, normalize_doc_id
 
 from . import job_store
+from .name_review import apply_corrected_names, name_review_file_map, parse_name_page_csv
 from .pipeline import run_document
 
 
@@ -29,6 +30,7 @@ bp = Blueprint(
 
 _WORKERS: dict[str, threading.Thread] = {}
 _ACTIVE_JOB_STATUSES = {"running", "cancelling", "pausing"}
+_TERMINAL_STREAM_STATUSES = {"done", "done_with_errors", "failed", "cancelled", "paused", "awaiting_name_review"}
 
 
 @bp.get("/")
@@ -117,6 +119,8 @@ def resume(doc_id: str):
     current = job_store.latest_job_for_doc(normalized_doc_id)
     if current and str(current.get("status") or "") in _ACTIVE_JOB_STATUSES:
         return jsonify(_job_payload(current)), 409
+    if current and str(current.get("status") or "") == "awaiting_name_review":
+        return jsonify(_job_payload(current)), 409
     existing_pdf = doc_paths(normalized_doc_id).pdf
     job = job_store.create_job(
         normalized_doc_id,
@@ -138,6 +142,69 @@ def resume(doc_id: str):
         },
     )
     return jsonify(_job_payload(job))
+
+
+@bp.post("/continue-name-review/<job_id>")
+def continue_name_review(job_id: str):
+    current = _coerce_orphaned_job(job_store.load_job_by_id(job_id))
+    if not current:
+        abort(404)
+    if str(current.get("status") or "") in _ACTIVE_JOB_STATUSES:
+        return jsonify(_job_payload(current)), 409
+
+    doc_id = normalize_doc_id(str(current.get("doc_id") or ""))
+    paths = doc_paths(doc_id)
+    uploaded = request.files.get("names_csv")
+    review = dict(current.get("name_review") or {})
+    if uploaded and uploaded.filename:
+        raw = uploaded.read()
+        text = raw.decode("utf-8-sig")
+        rows = parse_name_page_csv(text)
+        applied = apply_corrected_names(doc_id, rows, paths=paths)
+        review.update(
+            {
+                "status": "uploaded",
+                "reviewed_at": job_store.utc_now(),
+                "uploaded_filename": Path(uploaded.filename).name,
+                "uploaded_csv": applied.get("uploaded_csv") or {},
+                "page_count": int(applied.get("page_count") or review.get("page_count") or 0),
+                "name_rows": int(applied.get("name_rows") or 0),
+                "cleared_downstream": applied.get("cleared_downstream") or {},
+                "message": "Uploaded corrected names CSV was applied to names.json artifacts.",
+            }
+        )
+        job_store.append_log(current, f"Applied corrected name review CSV with {review['name_rows']} row(s).")
+    else:
+        review.update(
+            {
+                "status": "accepted",
+                "reviewed_at": job_store.utc_now(),
+                "message": "Current extracted names were accepted without changes.",
+            }
+        )
+        job_store.append_log(current, "Accepted current extracted names without corrections.")
+
+    current["name_review"] = review
+    current["status"] = "pending"
+    current["current_stage"] = ""
+    current["finished_at"] = ""
+    current["pause_requested"] = False
+    current["cancel_requested"] = False
+    job_store.save_job(current)
+    job_store.emit_event(current, "status", {"status": "pending"})
+    _start_worker(
+        str(current["job_id"]),
+        doc_id,
+        {
+            "source_pdf": _source_pdf_for_resume(doc_id, current),
+            "dpi": int(current.get("dpi") or 300),
+            "resume": True,
+            "ocr_model": str(current.get("ocr_model") or settings.OCR_MODEL),
+            "text_model": str(current.get("text_model") or settings.OLLAMA_MODEL),
+            "name_review_completed": True,
+        },
+    )
+    return jsonify(_job_payload(current))
 
 
 @bp.post("/pause/<job_id>")
@@ -216,11 +283,11 @@ def download_output(job_id: str, kind: str):
     current = _coerce_orphaned_job(job_store.load_job_by_id(job_id))
     if not current:
         abort(404)
-    file_map = _output_file_map(current["doc_id"])
+    file_map = _download_file_map(current["doc_id"])
     path = file_map.get(kind)
     if path is None or not path.exists():
         abort(404)
-    mimetype = "application/json" if path.suffix.lower() == ".json" else "text/csv"
+    mimetype = _mimetype_for_path(path)
     return send_file(path, mimetype=mimetype, as_attachment=True, download_name=path.name)
 
 
@@ -260,7 +327,7 @@ def stream(job_id: str):
                 idle_cycles += 1
                 yield ": keep-alive\n\n"
                 time.sleep(1)
-            if latest and str(latest.get("status") or "") in {"done", "done_with_errors", "failed", "cancelled", "paused"} and idle_cycles >= 2:
+            if latest and str(latest.get("status") or "") in _TERMINAL_STREAM_STATUSES and idle_cycles >= 2:
                 break
 
     return Response(generate(), mimetype="text/event-stream")
@@ -280,6 +347,7 @@ def _job_payload(job: dict[str, Any]) -> dict[str, Any]:
     payload["browser_urls"] = _browser_urls()
     payload["pages"] = [_page_payload(payload["doc_id"], page) for page in (job.get("pages") or [])]
     payload["log_tail"] = list(job.get("log_tail") or [])
+    payload["name_review"] = _name_review_payload(payload["doc_id"], payload.get("job_id", ""), payload.get("name_review"))
     payload["artifacts_ready"] = {
         "pages_dir": doc_paths(payload["doc_id"]).pages_dir.exists(),
         "ocr_dir": doc_paths(payload["doc_id"]).ocr_dir.exists(),
@@ -287,6 +355,15 @@ def _job_payload(job: dict[str, Any]) -> dict[str, Any]:
         "output_dir": doc_paths(payload["doc_id"]).output_dir.exists(),
     }
     return payload
+
+
+def _source_pdf_for_resume(doc_id: str, job: dict[str, Any]) -> str:
+    existing_pdf = doc_paths(doc_id).pdf
+    if existing_pdf.exists():
+        return str(existing_pdf)
+    source_pdf = str(job.get("source_pdf") or "")
+    candidate = settings.input_pdfs_dir / Path(source_pdf).name
+    return str(candidate) if source_pdf and candidate.exists() else ""
 
 
 def _coerce_orphaned_job(job: dict[str, Any]) -> dict[str, Any]:
@@ -465,6 +542,46 @@ def _output_file_map(doc_id: str) -> dict[str, Path]:
         "places": output_dir / "name place.csv",
         "status": output_dir / "run_status.csv",
     }
+
+
+def _mimetype_for_path(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix == ".json":
+        return "application/json"
+    if suffix == ".txt":
+        return "text/plain"
+    return "text/csv"
+
+
+def _download_file_map(doc_id: str) -> dict[str, Path]:
+    return {
+        **_output_file_map(doc_id),
+        **name_review_file_map(doc_id, paths=doc_paths(doc_id)),
+    }
+
+
+def _name_review_payload(doc_id: str, job_id: str, raw_review: Any) -> dict[str, Any]:
+    review = dict(raw_review) if isinstance(raw_review, dict) else {}
+    files: list[dict[str, Any]] = []
+    labels = {
+        "name_review_text": "Combined Text",
+        "name_review_csv": "Current Names CSV",
+        "name_review_uploaded_csv": "Uploaded Correction CSV",
+    }
+    for key, path in name_review_file_map(doc_id, paths=doc_paths(doc_id)).items():
+        status = _base_preview(path)
+        if not status["exists"]:
+            continue
+        files.append(
+            {
+                "key": key,
+                "label": labels.get(key, path.name),
+                "download_url": url_for("orchestrator.download_output", job_id=job_id, kind=key) if job_id else "",
+                **status,
+            }
+        )
+    review["files"] = files
+    return review
 
 
 def _file_status(path: Path) -> dict[str, Any]:

@@ -9,6 +9,7 @@ from shared.paths import doc_paths, normalize_doc_id
 from shared.storage import artifact_ok, read_json
 
 from . import job_store
+from .name_review import generate_name_review_artifacts
 from .router import run_stage
 
 
@@ -32,6 +33,7 @@ def run_document(job_id: str, doc_id: str, *, options: PipelineOptions | None = 
         )
     job["status"] = "running"
     job["started_at"] = job.get("started_at") or job_store.utc_now()
+    job["finished_at"] = ""
     job_store.save_job(job)
     job_store.emit_event(job, "status", {"status": "running"})
     job_store.append_log(job, f"Starting pipeline for {normalized_doc_id}.")
@@ -54,6 +56,9 @@ def run_document(job_id: str, doc_id: str, *, options: PipelineOptions | None = 
         _run_folder_stage(job, "names", _extractable_pages(paths), resume=resume, text_model=str(opts.get("text_model") or settings.OLLAMA_MODEL))
         _propagate_name_skips(job)
         if _stop_if_requested(job):
+            return job
+        if not _name_review_completed(job, opts):
+            _pause_for_name_review(job, paths=paths)
             return job
         _run_folder_stage(job, "meta", _pages_with_names(paths), resume=resume, text_model=str(opts.get("text_model") or settings.OLLAMA_MODEL))
         if _stop_if_requested(job):
@@ -222,6 +227,37 @@ def _run_aggregate(job: dict[str, Any]) -> None:
     job["aggregate_result"] = result
     job_store.save_job(job)
     job_store.emit_event(job, "page_updated", {"stage": "aggregate"})
+
+
+def _name_review_completed(job: dict[str, Any], opts: PipelineOptions) -> bool:
+    if bool(opts.get("name_review_completed")):
+        return True
+    review = job.get("name_review")
+    if not isinstance(review, dict):
+        return False
+    return str(review.get("status") or "") in {"accepted", "uploaded"}
+
+
+def _pause_for_name_review(job: dict[str, Any], *, paths) -> None:
+    review = generate_name_review_artifacts(str(job["doc_id"]), paths=paths)
+    name_review = dict(job.get("name_review") or {})
+    name_review.update(
+        {
+            "status": "ready",
+            "generated_at": job_store.utc_now(),
+            "page_count": int(review.get("page_count") or 0),
+            "name_rows": int(review.get("name_rows") or 0),
+            "combined_text": review.get("combined_text") or {},
+            "names_csv": review.get("names_csv") or {},
+            "message": "Review extracted names before running metadata, places, and aggregation.",
+        }
+    )
+    job["name_review"] = name_review
+    job_store.append_log(
+        job,
+        f"Name review artifacts ready: {name_review['page_count']} page(s), {name_review['name_rows']} name row(s).",
+    )
+    job_store.finalize_job(job, "awaiting_name_review")
 
 
 def _progress_tracker(job: dict[str, Any], stage: str, *, page_numbers: list[int] | None = None) -> Callable[[str, int, int, Path], None]:

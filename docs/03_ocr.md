@@ -4,11 +4,11 @@
 
 ## 1. Purpose
 
-Run OCR page by page over `data/pages/<doc_id>/p*.png` and produce `data/ocr_text/<doc_id>/p*.txt`. The standalone OCR UI and CLI still use saved images, while the orchestrator can call the shared in-memory OCR helper after rendering a PDF page without saving the PNG.
+Run OCR page by page over `data/pages/<doc_id>/p*.png` and produce English/Latin-script ASCII text in `data/ocr_text/<doc_id>/p*.txt`. The standalone OCR UI and CLI still use saved images, while the orchestrator can call the shared in-memory OCR helper after rendering a PDF page without saving the PNG.
 
 The underlying logic **inherits the approach from the original `glm_ocr_ollama.py`**: traditional CV preprocessing (deskew, enhancement, crop, tiling), send each tile to the vision model, merge text, and fall back to a single full-page model call.
 
-Implementation status: Phase 3 was implemented on 2026-04-20. Unit tests run without a live LLM by mocking the Ollama image call; the standalone OCR service starts at `http://127.0.0.1:5103/ocr/`; preprocessing preview has been smoke-tested against `data/pages/upload_fixture/p001.png`; and a live `glm-ocr:latest` smoke test completed 2/2 `upload_fixture` pages into `data/ocr_text/upload_fixture/`.
+Implementation status: Phase 3 was implemented on 2026-04-20. Unit tests run without a live LLM by mocking the Ollama image call; the standalone OCR service starts at `http://127.0.0.1:5103/ocr/`; preprocessing preview has been smoke-tested against `data/pages/upload_fixture/p001.png`; and a live `glm-ocr:latest` smoke test completed 2/2 `upload_fixture` pages into `data/ocr_text/upload_fixture/`. On 2026-05-05, the OCR prompt and cleanup step were tightened so saved OCR output ignores non-English scripts and normalizes retained Latin-script text to plain ASCII.
 
 ## 2. Input / Output
 
@@ -39,6 +39,7 @@ data/ocr_text/<doc_id>/
 Conventions:
 
 - Text files should preserve original line breaks as much as possible.
+- Persisted OCR text should contain only visible English/Latin-script content in plain ASCII. Ignore Arabic, Chinese, and other non-English/non-Latin scripts; normalize accented Latin letters and smart punctuation to ASCII where possible.
 - Pages that cannot be OCRed should contain the literal value `[OCR_EMPTY]`. Do not leave empty files; downstream modules need to know the page was attempted.
 - OCR text is a durable intermediate artifact, not a temporary cache. Downstream classifier, name, metadata, and place modules must read from `data/ocr_text/<doc_id>/pNNN.txt` instead of re-running OCR.
 - After every page, write or update `manifest.json` atomically with status, character count, elapsed time, model name, tile count, and any error. This makes large-document resume and dashboard display reliable.
@@ -61,7 +62,7 @@ page.png
   |
   v for each slice:
   |     base64(slice) -> ollama vision generate(prompt, image)
-  |     -> cleanup_ocr_text(response)
+  |     -> cleanup_ocr_text(response) -> English/Latin-script ASCII only
   |
   v join non-empty slice texts with "\n\n"
   |
@@ -70,13 +71,16 @@ page.png
   v if still empty: write "[OCR_EMPTY]"
 ```
 
-Move the original OCR prompt into `config/prompts/ocr/ocr.txt` unchanged:
+The OCR prompt lives in `config/prompts/ocr/ocr.txt` and must preserve the English/Latin-script-only contract:
 
 ```text
-You are an OCR engine. Transcribe ALL visible text from the image.
+You are an OCR engine. Transcribe ONLY visible English / Latin-script text from the image.
 Rules:
 - Output ONLY the text (no markdown, no code fences).
 - Preserve line breaks as best as possible.
+- Ignore Arabic script, Chinese characters, and every other non-English/non-Latin script.
+- Use plain ASCII characters only. Convert curly quotes/dashes and accented Latin letters to their closest ASCII form when possible.
+- If a page contains only non-English text, output exactly: [OCR_EMPTY]
 - Do not add commentary or explanations.
 - If you cannot read any text, output exactly: [OCR_EMPTY]
 ```
@@ -226,6 +230,7 @@ Unit tests without LLM:
 
 - Each `preprocessing.py` function should process clean, skewed, and noisy fixtures without throwing and with valid output dimensions.
 - `cleanup_ocr_text` should remove markdown fences.
+- `cleanup_ocr_text` should drop non-English scripts and normalize retained Latin-script text, accents, and smart punctuation to ASCII.
 - `should_skip_existing` should behave correctly for empty files, `[OCR_EMPTY]`, and normal text.
 - `ocr_page` and `run_folder` should be covered with mocked Ollama calls.
 
@@ -249,6 +254,7 @@ Integration tests requiring Ollama:
 
 - Use a clear English page and assert the OCR output contains a known substring.
 - Use a blank page and assert the output is `[OCR_EMPTY]`.
+- Use a mixed-script or non-English-only page and assert saved OCR contains no non-ASCII script text, with non-English-only pages becoming `[OCR_EMPTY]`.
 - Add a sample-input smoke test that runs OCR on 2 to 5 selected pages from the local sample PDFs.
 - Add a manual full-input resume test: start OCR on a large PDF, stop after several pages, restart, and verify completed `pNNN.txt` files are skipped.
 
@@ -261,12 +267,14 @@ Mark these integration tests with `pytest -m integration` so CI can skip them.
 - **Intermediate storage**: OCR text is expected to accumulate under `data/ocr_text/`. It should be small compared with rendered images and must not be deleted automatically.
 - **OOM**: if an image is too large and the vision model OOMs, reduce the `preprocess_long` parameter.
 - **Model hallucination**: vision models sometimes return explanatory prose like "the document appears to be X" instead of OCR text. The prompt forbids this, but `cleanup_ocr_text` should strip known patterns if they appear.
+- **Mixed-script pages**: if a page includes both English and non-English scripts, only the visible English/Latin-script content should be persisted. If the page has no English/Latin-script text, persist `[OCR_EMPTY]`.
 
 ## 11. Build Checklist
 
 - [x] All `preprocessing.py` functions are moved over and pass standalone unit tests.
 - [x] `core.py` implements `ocr_page` and `run_folder`.
 - [x] `cleanup_ocr_text` removes fences and explanatory prose.
+- [x] `cleanup_ocr_text` filters non-English scripts and normalizes retained Latin-script text to ASCII.
 - [x] All blueprint routes are implemented.
 - [x] CLI is compatible with the original script arguments.
 - [x] Test UI shows the preprocessing images and final merged text for saved OCR output.

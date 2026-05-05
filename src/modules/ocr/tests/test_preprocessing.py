@@ -39,6 +39,7 @@ class OcrPreprocessingTests(unittest.TestCase):
 
     def test_cleanup_and_skip_existing(self) -> None:
         self.assertEqual(cleanup_ocr_text("```text\nHello\n```"), "Hello")
+        self.assertEqual(cleanup_ocr_text("Hello مرحبا 世界\nSa\u2019idah caf\u00e9 \u2014 done"), "Hello\nSa'idah cafe - done")
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "p001.txt"
             self.assertFalse(should_skip_existing(path))

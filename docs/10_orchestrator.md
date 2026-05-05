@@ -2,7 +2,7 @@
 
 > Pipeline orchestrator. Connects modules 02 through 09 into an end-to-end pipeline, tracks per-page progress, and supports resume.
 
-Implementation status as of 2026-05-04: standalone dashboard, persistent `job.json` store, `pipeline.log`, `events.jsonl`, background execution, server-rendered initial job state, live SSE updates with polling fallback, visible dashboard connection/error status, stale-job coercion from `running` to `paused` after restart or lost worker thread, combined in-memory ingest+OCR for orchestrator runs, `POST /orchestrate/run`, `POST /orchestrate/resume/<doc_id>`, `POST /orchestrate/cancel/<job_id>`, `GET /orchestrate/status/<job_id>`, `GET /orchestrate/stream/<job_id>`, artifact inspection, and unit tests are implemented in `src/orchestrator/`. The current runtime is standalone `ORCH_MODE=inproc`; HTTP dispatch and main `web_app` integration remain future Phase 6 work.
+Implementation status as of 2026-05-05: standalone dashboard, persistent `job.json` store, `pipeline.log`, `events.jsonl`, background execution, server-rendered initial job state, live SSE updates with polling fallback, visible dashboard connection/error status, stale-job coercion from `running` to `paused` after restart or lost worker thread, combined in-memory ingest+OCR for orchestrator runs, the names-review checkpoint after `name_extractor`, `POST /orchestrate/run`, `POST /orchestrate/resume/<doc_id>`, `POST /orchestrate/continue-name-review/<job_id>`, `POST /orchestrate/cancel/<job_id>`, `GET /orchestrate/status/<job_id>`, `GET /orchestrate/stream/<job_id>`, artifact inspection, and unit tests are implemented in `src/orchestrator/`. The current runtime is standalone `ORCH_MODE=inproc`; HTTP dispatch and main `web_app` integration remain future Phase 6 work.
 
 ## 1. Purpose
 
@@ -90,6 +90,8 @@ def run_document(doc_id: str, resume: bool = True) -> Job:
     run_classify_stage(job, doc_id)
     propagate_classify_skips(job, doc_id)
     run_names_stage(job, doc_id)
+    generate_name_review_artifacts(job, doc_id)
+    pause_until_user_accepts_or_uploads_corrected_names(job)
     run_metadata_stage(job, doc_id)
     run_places_stage(job, doc_id)
     run_aggregate(job, doc_id)
@@ -105,9 +107,11 @@ The current implementation is intentionally simpler than the original design ske
 
 Module communication is still abstracted behind `router.py`, but the current Phase 5 implementation only uses **direct in-process dispatch**. HTTP dispatch is deferred until the main `web_app` / multi-service integration phase.
 
-The router still exposes separate `ingest` and `ocr` dispatch branches for the standalone module UIs and debugging workflows. The orchestrator's `run_document()` path calls `ingest_ocr`, implemented in `src/orchestrator/ingest_ocr.py`, which uses PyMuPDF to render a page in memory and `modules.ocr.core.ocr_image_bgr()` to OCR that in-memory image. New orchestrator runs do not create `data/pages/<doc_id>/pNNN.png`; old page images may remain only from previous standalone ingest/debug runs.
+The router still exposes separate `ingest` and `ocr` dispatch branches for the standalone module UIs and debugging workflows. The orchestrator's `run_document()` path calls `ingest_ocr`, implemented in `src/orchestrator/ingest_ocr.py`, which uses PyMuPDF to render a page in memory and `modules.ocr.core.ocr_image_bgr()` to OCR that in-memory image. That shared helper enforces the same English/Latin-script ASCII OCR output as the standalone OCR service. New orchestrator runs do not create `data/pages/<doc_id>/pNNN.png`; old page images may remain only from previous standalone ingest/debug runs.
 
 The names stage calls `modules.name_extractor.core.run_folder` through `src/orchestrator/router.py`. Therefore, name-extractor implementation changes are picked up by orchestrator runs after rebuilding/restarting the orchestrator container or local process. With `resume=true`, already-written `pNNN.names.json` artifacts are reused; clear or rerun names artifacts when you need regenerated V2 outputs.
+
+After the names stage completes, the orchestrator writes two review artifacts under `data/output/<doc_id>/`: `name_review_combined_text.txt`, which combines OCR text for pages with `pNNN.names.json`, and `name_review_names.csv`, which has `Name,Page` rows for the currently extracted subject names. The job status becomes `awaiting_name_review`. The dashboard lets the operator download both files, either accept the current names, or upload a corrected `Name,Page` CSV. If a corrected CSV is uploaded, the orchestrator rewrites the relevant `pNNN.names.json` files, clears stale metadata/place/final-output artifacts, and then continues with metadata, places, and aggregation.
 
 ```python
 # orchestrator/router.py
@@ -148,6 +152,7 @@ src/orchestrator/
 | POST | `/orchestrate/run` | Start an async job from either an uploaded PDF or a registered `source_pdf`, then return `job_id` |
 | POST | `/orchestrate/resume/<doc_id>` | Resume a previously interrupted job |
 | POST | `/orchestrate/pause/<job_id>` | Soft-pause after the current stage finishes |
+| POST | `/orchestrate/continue-name-review/<job_id>` | Accept current names or upload a corrected `Name,Page` CSV and continue |
 | POST | `/orchestrate/cancel/<job_id>` | Soft-cancel after the current stage finishes |
 | POST | `/orchestrate/clear-results/<doc_id>` | Delete generated pages, OCR text, intermediate JSON, outputs, logs, and audit files for one document while keeping the source PDF |
 | GET | `/orchestrate/status/<job_id>` | Current job state as JSON |

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import time
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,16 +20,39 @@ from .preprocessing import b64_png, preprocess_page
 
 
 DEFAULT_OCR_PROMPT = (
-    "You are an OCR engine. Transcribe ALL visible text from the image.\n"
+    "You are an OCR engine. Transcribe ONLY visible English / Latin-script text from the image.\n"
     "Rules:\n"
     "- Output ONLY the text (no markdown, no code fences).\n"
     "- Preserve line breaks as best as possible.\n"
+    "- Ignore Arabic script, Chinese characters, and every other non-English/non-Latin script.\n"
+    "- Use plain ASCII characters only. Convert curly quotes/dashes and accented Latin letters to their closest ASCII form when possible.\n"
+    "- If a page contains only non-English text, output exactly: [OCR_EMPTY]\n"
     "- Do not add commentary or explanations.\n"
     "- If you cannot read any text, output exactly: [OCR_EMPTY]\n"
 )
 
 ProgressCallback = Callable[[str, int, int, Path], None]
 _FENCE_LINE = re.compile(r"^\s*```(?:[a-zA-Z0-9_-]+)?\s*$")
+_ASCII_PUNCTUATION_MAP = str.maketrans(
+    {
+        "\u00a0": " ",
+        "\u2018": "'",
+        "\u2019": "'",
+        "\u201a": "'",
+        "\u201b": "'",
+        "\u201c": '"',
+        "\u201d": '"',
+        "\u201e": '"',
+        "\u201f": '"',
+        "\u2010": "-",
+        "\u2011": "-",
+        "\u2012": "-",
+        "\u2013": "-",
+        "\u2014": "-",
+        "\u2015": "-",
+        "\u2026": "...",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -68,10 +92,23 @@ def cleanup_ocr_text(text: str) -> str:
         stripped = line.rstrip()
         if re.match(r"^\s*(?:here is|the text in the image|transcription)\b", stripped, flags=re.I):
             continue
-        lines.append(stripped)
+        lines.append(_english_ascii_only(stripped))
     cleaned = "\n".join(lines).strip()
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip()
+
+
+def _english_ascii_only(text: str) -> str:
+    normalized = unicodedata.normalize("NFKD", str(text).translate(_ASCII_PUNCTUATION_MAP))
+    output: list[str] = []
+    for char in normalized:
+        if unicodedata.combining(char):
+            continue
+        if char == "\n" or 32 <= ord(char) <= 126:
+            output.append(char)
+        elif char.isspace():
+            output.append(" ")
+    return re.sub(r"[ \t]{2,}", " ", "".join(output)).rstrip()
 
 
 def is_effectively_empty(text: str) -> bool:

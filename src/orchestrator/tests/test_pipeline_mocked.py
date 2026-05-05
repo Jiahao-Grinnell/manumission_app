@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest import mock
 
 from shared.storage import write_json_atomic
-from orchestrator import job_store, pipeline
+from orchestrator import job_store, name_review, pipeline
 
 
 def _stage_summary(stage: str, pages: list[tuple[int, str]]) -> dict:
@@ -98,10 +98,15 @@ class PipelineMockedTests(unittest.TestCase):
                 mock.patch.object(job_store, "settings", fake_settings),
                 mock.patch.object(pipeline, "settings", fake_settings),
                 mock.patch.object(pipeline, "doc_paths", return_value=paths),
+                mock.patch.object(name_review, "doc_paths", return_value=paths),
                 mock.patch.object(pipeline, "run_stage", side_effect=fake_run_stage),
             ):
                 job = job_store.create_job("demo", source_pdf="demo.pdf", ocr_model="ocr-mock", text_model="text-mock")
-                result = pipeline.run_document(job["job_id"], "demo", options={"source_pdf": str(paths.pdf), "resume": True})
+                result = pipeline.run_document(
+                    job["job_id"],
+                    "demo",
+                    options={"source_pdf": str(paths.pdf), "resume": True, "name_review_completed": True},
+                )
 
             self.assertEqual(result["status"], "done")
             self.assertEqual(result["pages"][0]["names"]["state"], "done")
@@ -168,6 +173,7 @@ class PipelineMockedTests(unittest.TestCase):
                 mock.patch.object(job_store, "settings", fake_settings),
                 mock.patch.object(pipeline, "settings", fake_settings),
                 mock.patch.object(pipeline, "doc_paths", return_value=paths),
+                mock.patch.object(name_review, "doc_paths", return_value=paths),
                 mock.patch.object(pipeline, "run_stage", side_effect=fake_run_stage),
             ):
                 job = job_store.create_job("demo_pause", source_pdf="demo_pause.pdf", ocr_model="ocr-mock", text_model="text-mock")
@@ -178,6 +184,84 @@ class PipelineMockedTests(unittest.TestCase):
             self.assertEqual(result["pages"][1]["ocr"]["state"], "done")
             self.assertEqual(result["pages"][0]["classify"]["state"], "pending")
             self.assertEqual(result["aggregate"]["state"], "pending")
+
+    def test_pipeline_pauses_for_name_review_after_names(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake_settings = mock.Mock(
+                logs_root=root / "logs",
+                input_pdfs_dir=root / "input_pdfs",
+                OCR_MODEL="ocr-mock",
+                OLLAMA_MODEL="text-mock",
+            )
+            fake_settings.input_pdfs_dir.mkdir(parents=True, exist_ok=True)
+            paths = mock.Mock()
+            paths.doc_id = "demo_review"
+            paths.pdf = fake_settings.input_pdfs_dir / "demo_review.pdf"
+            paths.pages_dir = root / "pages" / "demo_review"
+            paths.ocr_dir = root / "ocr_text" / "demo_review"
+            paths.inter_dir = root / "intermediate" / "demo_review"
+            paths.output_dir = root / "output" / "demo_review"
+            paths.manifest = lambda: paths.pages_dir / "manifest.json"
+            paths.page_image = lambda page: paths.pages_dir / f"p{page:03d}.png"
+            paths.ocr_text = lambda page: paths.ocr_dir / f"p{page:03d}.txt"
+            paths.classify = lambda page: paths.inter_dir / f"p{page:03d}.classify.json"
+            paths.names = lambda page: paths.inter_dir / f"p{page:03d}.names.json"
+            paths.meta = lambda page: paths.inter_dir / f"p{page:03d}.meta.json"
+            paths.places = lambda page: paths.inter_dir / f"p{page:03d}.places.json"
+            for folder in (paths.pages_dir, paths.ocr_dir, paths.inter_dir, paths.output_dir, fake_settings.logs_root):
+                folder.mkdir(parents=True, exist_ok=True)
+            paths.pdf.write_bytes(b"%PDF-1.4 fake")
+
+            def fake_run_stage(stage, doc_id, **kwargs):
+                if stage == "ingest_ocr":
+                    for page in (1, 2):
+                        text = paths.ocr_text(page)
+                        kwargs["progress"]("render", page, 2, text)
+                        text.write_text(f"ocr page {page}", encoding="utf-8")
+                        kwargs["progress"]("done", page, 2, text)
+                    return {
+                        "doc_id": doc_id,
+                        "page_count": 2,
+                        "total_pages": 2,
+                        "status": "complete",
+                        "pages": [
+                            {"page": 1, "status": "done", "text_file": "p001.txt"},
+                            {"page": 2, "status": "done", "text_file": "p002.txt"},
+                        ],
+                    }
+                if stage == "classify":
+                    write_json_atomic(paths.classify(1), {"page": 1, "should_extract": True, "report_type": "statement"})
+                    write_json_atomic(paths.classify(2), {"page": 2, "should_extract": False, "skip_reason": "index", "report_type": "correspondence"})
+                    kwargs["progress"]("done", 1, 2, paths.ocr_text(1))
+                    kwargs["progress"]("done", 2, 2, paths.ocr_text(2))
+                    return _stage_summary("classify", [(1, "done"), (2, "done")])
+                if stage == "names":
+                    write_json_atomic(paths.names(1), {"page": 1, "named_people": [{"name": "Mariam"}]})
+                    kwargs["progress"]("done", 1, 1, paths.ocr_text(1))
+                    return _stage_summary("names", [(1, "done")])
+                raise AssertionError(stage)
+
+            with (
+                mock.patch.object(job_store, "settings", fake_settings),
+                mock.patch.object(pipeline, "settings", fake_settings),
+                mock.patch.object(pipeline, "doc_paths", return_value=paths),
+                mock.patch.object(name_review, "doc_paths", return_value=paths),
+                mock.patch.object(pipeline, "run_stage", side_effect=fake_run_stage),
+            ):
+                job = job_store.create_job("demo_review", source_pdf="demo_review.pdf", ocr_model="ocr-mock", text_model="text-mock")
+                result = pipeline.run_document(job["job_id"], "demo_review", options={"source_pdf": str(paths.pdf), "resume": True})
+
+            self.assertEqual(result["status"], "awaiting_name_review")
+            self.assertEqual(result["pages"][0]["names"]["state"], "done")
+            self.assertEqual(result["pages"][0]["meta"]["state"], "pending")
+            self.assertEqual(result["aggregate"]["state"], "pending")
+            combined = paths.output_dir / "name_review_combined_text.txt"
+            names_csv = paths.output_dir / "name_review_names.csv"
+            self.assertTrue(combined.exists())
+            self.assertIn("========== PAGE 001 ==========", combined.read_text(encoding="utf-8"))
+            self.assertIn("Name,Page", names_csv.read_text(encoding="utf-8"))
+            self.assertIn("Mariam,1", names_csv.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

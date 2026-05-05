@@ -4,7 +4,7 @@
 
 This is an end-to-end extraction system for **historical slavery and manumission archival documents**. Given a scanned PDF, the system should:
 
-1. Obtain OCR text from each PDF page. Standalone debugging can split the PDF into saved page images first; orchestrator production runs render each page in memory and OCR it immediately.
+1. Obtain English/Latin-script ASCII OCR text from each PDF page. Standalone debugging can split the PDF into saved page images first; orchestrator production runs render each page in memory and OCR it immediately.
 2. Persist one OCR text file per page.
 3. Use LLMs to extract from each page:
    - whether the page has any visible personal names, whether no-name pages should be skipped, and the report type
@@ -353,7 +353,7 @@ Intermediate results are first-class outputs, not throwaway cache:
 |---|---|---|
 | PDF source | `data/input_pdfs/<doc_id>.pdf` | Allows reruns and audit of the exact source file |
 | Page images | `data/pages/<doc_id>/pNNN.png` | Optional standalone ingest/debug artifact; orchestrator production runs do not save it |
-| OCR text | `data/ocr_text/<doc_id>/pNNN.txt` | Expensive to produce; must be inspectable and reused by every downstream module |
+| OCR text | `data/ocr_text/<doc_id>/pNNN.txt` | English/Latin-script ASCII output; expensive to produce; must be inspectable and reused by every downstream module |
 | Classifier JSON | `data/intermediate/<doc_id>/pNNN.classify.json` | Decides whether downstream extraction should run |
 | Name JSON | `data/intermediate/<doc_id>/pNNN.names.json` | Stores pass-level extraction details and removed-candidate reasons |
 | Metadata JSON | `data/intermediate/<doc_id>/pNNN.meta.json` | Stores field-level extracted rows and evidence |

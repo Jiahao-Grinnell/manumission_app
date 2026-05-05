@@ -2,11 +2,11 @@
 
 ## Project Overview
 
-Manumission App is an end-to-end modular Flask application for extracting information from historical slavery and manumission archival documents. It converts scanned PDF documents into OCR text, runs page classification, named-entity recognition, metadata extraction, and place extraction, then uses an LLM to produce final CSV outputs. The standalone ingest module can still render debug page images, while the orchestrator production path now renders each page in memory and stores only OCR text.
+Manumission App is an end-to-end modular Flask application for extracting information from historical slavery and manumission archival documents. It converts scanned PDF documents into English/Latin-script ASCII OCR text, runs page classification, named-entity recognition, metadata extraction, and place extraction, then uses an LLM to produce final CSV outputs. The standalone ingest module can still render debug page images, while the orchestrator production path now renders each page in memory and stores only OCR text.
 
 The system has been refactored from monolithic Python scripts into modular services. Each module can run independently, be tested independently, and be visualized through its own UI.
 
-Current completed runtime target: M5 / Phase 5. Ollama gateway is available; `pdf_ingest` can upload or register PDFs, render page PNGs, write manifests, and show thumbnails at `http://127.0.0.1:5102/ingest/`; `normalizer` can demonstrate name, place, date, evidence, name comparison, and place dedupe rules at `http://127.0.0.1:5108/normalizer/`; `aggregator` can write final CSVs and preview/download them at `http://127.0.0.1:5109/aggregate/`; `ocr` can preview preprocessing and run OCR into `data/ocr_text/<doc_id>/` at `http://127.0.0.1:5103/ocr/` when the OCR model is available; `page_classifier` can classify OCR pages, show report-type and visible-name rule hints, and persist `pNNN.classify.json` files at `http://127.0.0.1:5104/classify/`; `name_extractor` can run the V2.1 span-grounded subject-name pipeline, persist `pNNN.names.json`, explain dropped candidates with context/score signals, and rerun one stage at `http://127.0.0.1:5105/names/`; `metadata_extractor` can extract one validated `Detailed info.csv` row per named person, persist `pNNN.meta.json`, and inspect field-level evidence at `http://127.0.0.1:5106/meta/`; `place_extractor` can extract per-person place paths, persist `pNNN.places.json`, inspect candidate, verified, date-enriched, and reconciled route rows, download the current page or selected person as CSV, and clear all saved place results for the selected document at `http://127.0.0.1:5107/places/`; and `orchestrator` can run a document end to end, persist job state under `data/logs/<doc_id>/`, render the current job summary and per-page table immediately on first load, keep progress updating through SSE with polling fallback, show dashboard connection status, pause after the current stage, auto-coerce stale `running` jobs to `paused` after restart or worker loss so they can be resumed safely, clear generated artifacts for a document while keeping the source PDF, and preview/download the final CSV outputs directly at `http://127.0.0.1:5110/orchestrate/`.
+Current completed runtime target: M5 / Phase 5. Ollama gateway is available; `pdf_ingest` can upload or register PDFs, render page PNGs, write manifests, and show thumbnails at `http://127.0.0.1:5102/ingest/`; `normalizer` can demonstrate name, place, date, evidence, name comparison, and place dedupe rules at `http://127.0.0.1:5108/normalizer/`; `aggregator` can write final CSVs and preview/download them at `http://127.0.0.1:5109/aggregate/`; `ocr` can preview preprocessing and run English/Latin-script ASCII-filtered OCR into `data/ocr_text/<doc_id>/` at `http://127.0.0.1:5103/ocr/` when the OCR model is available; `page_classifier` can classify OCR pages, show report-type and visible-name rule hints, and persist `pNNN.classify.json` files at `http://127.0.0.1:5104/classify/`; `name_extractor` can run the V2.1 span-grounded subject-name pipeline, persist `pNNN.names.json`, explain dropped candidates with context/score signals, and rerun one stage at `http://127.0.0.1:5105/names/`; `metadata_extractor` can extract one validated `Detailed info.csv` row per named person, persist `pNNN.meta.json`, and inspect field-level evidence at `http://127.0.0.1:5106/meta/`; `place_extractor` can extract per-person place paths, persist `pNNN.places.json`, inspect candidate, verified, date-enriched, and reconciled route rows, download the current page or selected person as CSV, and clear all saved place results for the selected document at `http://127.0.0.1:5107/places/`; and `orchestrator` can run a document through names, pause for name review with downloadable combined OCR text and `Name,Page` CSV files, accept an optional corrected names CSV, then continue through metadata, places, and aggregation while persisting job state under `data/logs/<doc_id>/` and previewing/downloading outputs at `http://127.0.0.1:5110/orchestrate/`.
 
 ## Architecture
 
@@ -15,7 +15,7 @@ The system consists of the following modules:
 - **shared**: Core library containing the LLM client, schemas, paths, text utilities, and storage.
 - **ollama_gateway**: Ollama container and model management.
 - **pdf_ingest**: Splits PDFs into images.
-- **ocr**: Runs OCR with a vision model.
+- **ocr**: Runs OCR with a vision model, keeping only visible English/Latin-script text and normalizing saved output to plain ASCII.
 - **page_classifier**: Keeps pages with visible personal names, skips pages without them, and classifies report type.
 - **name_extractor**: Extracts OCR-grounded enslaved/manumission subject names with context-bundled role labeling and deterministic scoring.
 - **metadata_extractor**: Extracts case metadata.
@@ -108,6 +108,8 @@ http://127.0.0.1:5103/ocr/
 
 The preprocessing preview works without a live OCR model call. Full OCR requires `glm-ocr:latest` to be present in runtime Ollama.
 
+Saved OCR text is intentionally English/Latin-script and plain ASCII: non-English scripts are ignored, accented Latin letters and smart punctuation are normalized when possible, and pages with only non-English or unreadable text are written as `[OCR_EMPTY]`.
+
 To run the current page classifier UI:
 
 ```bash
@@ -176,14 +178,14 @@ Then open:
 http://127.0.0.1:5110/orchestrate/
 ```
 
-The orchestrator can upload or select an existing PDF, render each page in memory and OCR it immediately without storing `data/pages/<doc_id>/pNNN.png`, run the rest of the pipeline in order, persist `job.json`, `pipeline.log`, and `events.jsonl` under `data/logs/<doc_id>/`, show the current job summary, per-page status grid, and log tail immediately on page load, keep the dashboard refreshed through SSE plus status polling fallback, expose visible live-update connection/error state, pause after the current stage, mark orphaned `running` jobs as `paused` after service restart or worker loss so they can be resumed safely, clear generated artifacts for the selected document, and preview/download the current final CSV outputs from the dashboard.
+The orchestrator can upload or select an existing PDF, render each page in memory and OCR it immediately without storing `data/pages/<doc_id>/pNNN.png`, run through classification and names, then pause with `name_review_combined_text.txt` and `name_review_names.csv` available for download. The operator can accept those names or upload a corrected `Name,Page` CSV before continuing through metadata, places, and aggregation. It also persists `job.json`, `pipeline.log`, and `events.jsonl` under `data/logs/<doc_id>/`, shows the current job summary, per-page status grid, and log tail immediately on page load, keeps the dashboard refreshed through SSE plus status polling fallback, exposes visible live-update connection/error state, marks orphaned `running` jobs as `paused` after service restart or worker loss so they can be resumed safely, clears generated artifacts for the selected document, and previews/downloads the current final CSV outputs from the dashboard.
 
 ## Usage
 
 1. Upload a PDF on the `/upload` page.
 2. For very large PDFs, place the file in `data/input_pdfs/` and register it from the input page instead of uploading through the browser.
 3. Monitor pipeline progress on the dashboard.
-4. Inspect persisted intermediate artifacts such as OCR text and per-page JSON as needed. Rendered page images are only expected when using the standalone ingest/debug workflow.
+4. Inspect persisted intermediate artifacts such as English/Latin-script OCR text and per-page JSON as needed. Rendered page images are only expected when using the standalone ingest/debug workflow.
 5. Download the generated CSV files.
 
 ## Development
