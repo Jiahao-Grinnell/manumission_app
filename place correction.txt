@@ -1,0 +1,91 @@
+I am uploading two files:
+
+1. A TXT file containing OCR text, divided by page markers such as:
+   ========== PAGE 001 ==========
+   ...page text...
+
+2. A CSV file containing extracted rows with fields such as name, page, place, order, date, evidence, or similar.
+
+Please check and correct my work carefully.
+
+My goal:
+For each page, and for each name listed in the CSV, determine which places that person traveled to, stayed in, was taken to, fled from, arrived at, boarded from, landed at, or otherwise personally moved through, based only on the text of that same page. Then arrange those places in chronological/narrative order within that page.
+
+Important rules:
+
+- Treat every page as independent.
+- Do NOT carry information from one page to another.
+- Even if the same name appears on multiple pages, process each page separately using only that page’s text.
+- Assume the names in the CSV are correct by default. Do not “fix” or rename people unless there is an obvious encoding/OCR issue and you explain it in the audit.
+- Read every relevant page carefully. Do not just scan by keywords.
+- Do not infer travel merely because a place appears near a name.
+- Do not count letter headers, sender/recipient addresses, office locations, file titles, archive metadata, or administrative routing locations as personal travel unless the page explicitly says the person was there, went there, was brought there, escaped there, landed there, took refuge there, etc.
+- Places connected only to another person, owner, official, ship, agency, or correspondent should not be counted as the named person’s travel unless the page explicitly links the named person to movement/presence there.
+- Places that are only origins, ethnic labels, tribal labels, owner residence, “of/from” descriptors, or document titles should be marked uncertain unless the page clearly says the person personally lived there, was born there, came from there, was kidnapped from there, was brought from there, or traveled from there.
+- If a place is mentioned but it is uncertain whether the person actually went there, keep it but set order = 0.
+- If a proposed place in the CSV is not supported by the page text, either remove it or set order = 0, and explain why in the audit.
+- If a place is clearly missing from the CSV, add it.
+- If the sequence is clear, assign order = 1, 2, 3, etc. according to the narrative sequence on that page.
+- If multiple places are certain but their relative sequence is unclear, either use the safest order from the text or set uncertain ones to order = 0.
+- Future/conditional/administrative plans such as “should be sent to,” “will be sent to,” “wishes to go,” “letter to,” or “arrange for passage to” should not be treated as completed travel unless the page confirms it happened.
+- Ship names are not places unless the CSV schema explicitly allows vessels as locations. If included, mark clearly as vessel/ship and explain.
+- Preserve page numbers exactly as in the CSV/TXT.
+- Preserve the original name values unless absolutely necessary.
+- Keep evidence short but specific, quoting or paraphrasing the exact page wording that supports the place/order.
+- Do not hallucinate places, dates, or movement.
+- Be conservative: if the evidence is weak, use order = 0.
+
+Movement evidence that should usually count:
+- “was kidnapped from X”
+- “was brought/taken to X”
+- “was sold at/in X”
+- “remained with him at X”
+- “served at X”
+- “ran away from X to Y”
+- “escaped from X and came to Y”
+- “took refuge at X”
+- “landed at X”
+- “was sent from X to Y”
+- “was born in X” if the task includes life-location sequence
+- “his/her home/native country/town is X” if directly referring to the named person
+
+Movement evidence that should usually NOT count:
+- “From: Residency Agent, Shargah”
+- “To: Political Resident, Bushire”
+- archive title, file title, index line, cover page
+- “master of Dubai” unless the named person is said to be in Dubai
+- “letter to the Shaikh of Dubai”
+- “the Political Resident at Bushire”
+- “property of a man of X” unless the person is said to live/travel there
+- future instructions or administrative routing only
+
+Please produce two output files:
+
+1. A corrected CSV:
+   - Same core columns as the input CSV where possible.
+   - Corrected place/order/date/evidence values.
+   - Added missing rows where the page clearly supports an additional place.
+   - Removed or downgraded unsupported rows.
+   - Use order = 0 for uncertain places.
+
+2. An audit CSV:
+   Include one row per change or important decision, with columns like:
+   - page
+   - name
+   - original_place
+   - original_order
+   - corrected_place
+   - corrected_order
+   - action: kept / corrected_order / added / removed / downgraded_to_uncertain / evidence_updated
+   - reason
+   - supporting_text
+
+Before finalizing, please report:
+- Number of rows in the original CSV
+- Number of rows in the corrected CSV
+- Number of pages reviewed
+- Number of pages changed
+- Number of audit records
+- Any pages that were ambiguous or could not be confidently corrected
+
+The key requirement is careful page-by-page reading. Do not rely on keyword matching alone.
