@@ -164,6 +164,40 @@ class CoreTests(unittest.TestCase):
             self.assertTrue((inter_dir / "p001.places.json").exists())
             self.assertFalse((inter_dir / "p002.places.json").exists())
 
+    def test_run_folder_stops_between_pages(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            in_dir = root / "ocr"
+            inter_dir = root / "inter"
+            in_dir.mkdir()
+            inter_dir.mkdir()
+            for page, name in ((1, "Mariam"), (2, "Fatima")):
+                (in_dir / f"p{page:03d}.txt").write_text(f"Statement by {name}.", encoding="utf-8")
+                (inter_dir / f"p{page:03d}.classify.json").write_text(
+                    json.dumps({"page": page, "should_extract": True, "report_type": "statement"}),
+                    encoding="utf-8",
+                )
+                (inter_dir / f"p{page:03d}.names.json").write_text(
+                    json.dumps({"page": page, "named_people": [{"name": name}]}),
+                    encoding="utf-8",
+                )
+            checks = iter((False, True))
+
+            summary = run_folder(
+                in_dir,
+                inter_dir,
+                inter_dir,
+                client=FakeClient([{"places": []}, {"places": []}]),
+                wait_ready=False,
+                should_stop=lambda: next(checks),
+            )
+
+            self.assertTrue(summary["interrupted"])
+            self.assertEqual(summary["status"], "interrupted")
+            self.assertEqual(summary["completed_pages"], 1)
+            self.assertTrue((inter_dir / "p001.places.json").exists())
+            self.assertFalse((inter_dir / "p002.places.json").exists())
+
     def test_run_page_file_skips_name_absent_from_ocr(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -180,6 +214,77 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(result.rows, [])
             self.assertEqual(result.model_calls, 0)
             self.assertEqual(result.people[0]["passes"]["candidate"]["fallback_reason"], "Skipped because the subject name is not present on this OCR page.")
+
+    def test_reviewed_names_bypass_ocr_presence_gate_and_preserve_exact_case(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ocr = root / "p001.txt"
+            classify = root / "p001.classify.json"
+            names = root / "p001.names.json"
+            target = root / "p001.places.json"
+            ocr.write_text("Amna travelled through Muscat.", encoding="utf-8")
+            classify.write_text(
+                json.dumps({"page": 1, "should_extract": True, "report_type": "statement"}),
+                encoding="utf-8",
+            )
+            names.write_text(
+                json.dumps(
+                    {
+                        "page": 1,
+                        "name_review_override": True,
+                        "name_review_source": "uploaded_csv",
+                        "named_people": [{"name": "AMNAH"}, {"name": "Amnah"}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            result = run_page_file(
+                ocr,
+                classify,
+                names,
+                target,
+                client=FakeClient([{"places": []}, {"places": []}, {"places": []}, {"places": []}]),
+            )
+
+            self.assertEqual(result.names, ["AMNAH", "Amnah"])
+            self.assertEqual([person["name"] for person in result.people], ["AMNAH", "Amnah"])
+            self.assertEqual(result.model_calls, 4)
+
+    def test_single_person_rerun_drops_people_outside_current_roster(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ocr = root / "p001.txt"
+            classify = root / "p001.classify.json"
+            names = root / "p001.names.json"
+            target = root / "p001.places.json"
+            ocr.write_text("Mariam gave evidence.", encoding="utf-8")
+            classify.write_text(
+                json.dumps({"page": 1, "should_extract": True, "report_type": "statement"}),
+                encoding="utf-8",
+            )
+            names.write_text(json.dumps({"page": 1, "named_people": [{"name": "Mariam"}]}), encoding="utf-8")
+            target.write_text(
+                json.dumps(
+                    {
+                        "people": [
+                            {"name": "Stale Person", "rows": [{"Name": "Stale Person", "Page": 1, "Place": "Dubai", "Order": 1}]},
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            result = run_page_file(
+                ocr,
+                classify,
+                names,
+                target,
+                client=FakeClient([{"places": []}, {"places": []}]),
+                person_name="Mariam",
+            )
+
+            self.assertEqual([person["name"] for person in result.people], ["Mariam"])
 
     def test_run_page_file_preserves_faraj_route_order_and_dates(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

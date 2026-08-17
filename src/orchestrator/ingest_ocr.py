@@ -18,6 +18,7 @@ from shared.storage import write_json_atomic
 
 
 ProgressCallback = Callable[[str, int, int, Path], None]
+ShouldStopCallback = Callable[[], bool]
 
 
 def run_ingest_ocr(
@@ -36,6 +37,7 @@ def run_ingest_ocr(
     timeout_s: int = 240,
     wait_ready: bool = True,
     progress: ProgressCallback | None = None,
+    should_stop: ShouldStopCallback | None = None,
 ) -> dict[str, Any]:
     """Render each PDF page in memory and OCR it immediately.
 
@@ -105,7 +107,11 @@ def run_ingest_ocr(
 
         zoom = dpi / 72
         matrix = fitz.Matrix(zoom, zoom)
+        interrupted = False
         for page_number in range(1, page_count + 1):
+            if should_stop and should_stop():
+                interrupted = True
+                break
             out_file = output / f"p{page_number:03d}.txt"
             page_meta = _page_entry(manifest, page_number, out_file.name)
             if can_resume and page_meta.get("status") != "error" and should_skip_existing(out_file):
@@ -178,6 +184,9 @@ def run_ingest_ocr(
             write_json_atomic(manifest_path, manifest)
 
         _refresh_manifest(manifest)
+        manifest["interrupted"] = interrupted
+        if interrupted:
+            manifest["status"] = "interrupted"
         write_json_atomic(manifest_path, manifest)
         return manifest
     finally:

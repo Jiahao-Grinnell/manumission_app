@@ -70,6 +70,7 @@ OCR TEXT:
 
 SCHEMA_HINT = '{"should_extract":true,"skip_reason":null,"report_type":"statement","evidence":"..."}'
 ProgressCallback = Callable[[str, int, int, Path], None]
+ShouldStopCallback = Callable[[], bool]
 
 
 @dataclass(frozen=True)
@@ -245,6 +246,7 @@ def run_folder(
     resume: bool = True,
     wait_ready: bool = True,
     progress: ProgressCallback | None = None,
+    should_stop: ShouldStopCallback | None = None,
 ) -> dict[str, Any]:
     input_path = Path(input_dir)
     output_path = Path(out_dir)
@@ -261,7 +263,11 @@ def run_folder(
     skipped = 0
     errors = 0
 
+    interrupted = False
     for index, text_path in enumerate(text_files, start=1):
+        if should_stop and should_stop():
+            interrupted = True
+            break
         page = _page_number(text_path)
         out_path = output_path / f"{text_path.stem}.classify.json"
         if resume and artifact_ok(out_path, "json"):
@@ -315,7 +321,8 @@ def run_folder(
         "completed_pages": completed,
         "skipped_pages": skipped,
         "error_pages": errors,
-        "status": _summary_status(len(text_files), completed, skipped, errors),
+        "status": "interrupted" if interrupted else _summary_status(len(text_files), completed, skipped, errors),
+        "interrupted": interrupted,
         "created_at": _utc_now(),
         "pages": summary_pages,
     }

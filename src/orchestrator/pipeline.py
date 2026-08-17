@@ -31,15 +31,20 @@ def run_document(job_id: str, doc_id: str, *, options: PipelineOptions | None = 
             ocr_model=str(opts.get("ocr_model") or settings.OCR_MODEL),
             text_model=str(opts.get("text_model") or settings.OLLAMA_MODEL),
         )
+    if str(job.get("status") or "") in {"paused", "cancelled"}:
+        return job
+    if _stop_if_requested(job):
+        return job
     job["status"] = "running"
     job["started_at"] = job.get("started_at") or job_store.utc_now()
     job["finished_at"] = ""
-    job_store.save_job(job)
-    job_store.emit_event(job, "status", {"status": "running"})
     job_store.append_log(job, f"Starting pipeline for {normalized_doc_id}.")
+    job_store.emit_event(job, "status", {"status": "running"})
 
     resume = bool(opts.get("resume", True))
     try:
+        if _stop_if_requested(job):
+            return job
         if _continue_after_name_review(opts):
             if not _name_review_completed(job, opts):
                 raise RuntimeError("Cannot continue after name review before names are accepted or uploaded.")
@@ -168,9 +173,8 @@ def _run_ingest_ocr(
         return
 
     job["current_stage"] = "ocr"
-    job_store.save_job(job)
-    job_store.emit_event(job, "page_updated", {"stage": "ocr"})
     job_store.append_log(job, f"Running combined ingest+OCR from {source_pdf.name}; page images will not be stored.")
+    job_store.emit_event(job, "page_updated", {"stage": "ocr"})
     summary = run_stage(
         "ingest_ocr",
         doc_id,
@@ -179,6 +183,7 @@ def _run_ingest_ocr(
         resume=resume,
         ocr_model=ocr_model or None,
         progress=_ingest_ocr_progress_tracker(job),
+        should_stop=lambda: _control_requested(job),
     )
     page_count = int(summary.get("page_count") or summary.get("total_pages") or 0)
     if page_count:
@@ -203,9 +208,8 @@ def _run_folder_stage(
         return
     job["current_stage"] = stage
     _prime_running(job, stage, page_numbers)
-    job_store.save_job(job)
-    job_store.emit_event(job, "page_updated", {"stage": stage, "page": page_numbers[0]})
     job_store.append_log(job, f"Running {stage} for {len(page_numbers)} page(s).")
+    job_store.emit_event(job, "page_updated", {"stage": stage, "page": page_numbers[0]})
     summary = run_stage(
         stage,
         doc_id,
@@ -213,6 +217,7 @@ def _run_folder_stage(
         ocr_model=ocr_model or None,
         text_model=text_model or None,
         progress=_progress_tracker(job, stage, page_numbers=page_numbers),
+        should_stop=lambda: _control_requested(job),
     )
     _apply_summary(job, stage, summary)
     job_store.save_job(job)
@@ -225,9 +230,8 @@ def _run_aggregate(job: dict[str, Any]) -> None:
     job_store.mark_doc_stage(job, "aggregate", "running", detail="aggregating final CSV files")
     for page in range(1, int(job.get("total_pages") or 0) + 1):
         job_store.mark_stage(job, "aggregate", page, state="running", detail="waiting for aggregation")
-    job_store.save_job(job)
-    job_store.emit_event(job, "page_updated", {"stage": "aggregate"})
     job_store.append_log(job, "Running aggregate.")
+    job_store.emit_event(job, "page_updated", {"stage": "aggregate"})
     result = run_stage("aggregate", doc_id, resume=True)
     for page in range(1, int(job.get("total_pages") or 0) + 1):
         job_store.mark_stage(job, "aggregate", page, state="done", detail="CSV rows updated")
@@ -359,11 +363,10 @@ def _progress_tracker(job: dict[str, Any], stage: str, *, page_numbers: list[int
             job_store.mark_stage(job, stage, page, state=mapped, detail=detail, error=detail if mapped == "failed" else "")
             if mapped == "failed":
                 _note_page(job, page, f"{stage} failed")
-            job_store.save_job(job)
-            job_store.emit_event(job, "page_updated", {"stage": stage, "page": page, "state": mapped})
             job_store.append_log(job, f"{stage} page {page:03d}: {mapped}.")
+            job_store.emit_event(job, "page_updated", {"stage": stage, "page": page, "state": mapped})
         current["index"] = max(current["index"], order.index(page) + 1 if page in order else current["index"])
-        if current["index"] < len(order):
+        if current["index"] < len(order) and not _control_requested(job):
             next_page = order[current["index"]]
             next_state = job_store.get_page(job, next_page)[stage].get("state")
             if next_state == "pending":
@@ -401,9 +404,8 @@ def _ingest_ocr_progress_tracker(job: dict[str, Any]) -> Callable[[str, int, int
         else:
             return
 
-        job_store.save_job(job)
-        job_store.emit_event(job, "page_updated", {"stage": "ocr", "page": page, "state": state})
         job_store.append_log(job, f"ingest+ocr page {page:03d}: {state}.")
+        job_store.emit_event(job, "page_updated", {"stage": "ocr", "page": page, "state": state})
 
     return callback
 
@@ -429,7 +431,6 @@ def _apply_ingest_ocr_summary(job: dict[str, Any], summary: dict[str, Any]) -> N
                 job_store.mark_stage(job, "ingest", page, state="failed", detail=detail, error=detail)
             job_store.mark_stage(job, "ocr", page, state="failed", detail=detail, error=str(item.get("error") or detail))
             _note_page(job, page, "ocr failed")
-    job_store.save_job(job)
 
 
 def _apply_summary(job: dict[str, Any], stage: str, summary: dict[str, Any]) -> None:
@@ -447,7 +448,6 @@ def _apply_summary(job: dict[str, Any], stage: str, summary: dict[str, Any]) -> 
         }.get(raw_status, raw_status or "pending")
         detail = str(item.get("error") or item.get("skip_reason") or item.get("filename") or "")
         job_store.mark_stage(job, stage, page, state=mapped, detail=detail, error=str(item.get("error") or ""))
-    job_store.save_job(job)
 
 
 def _propagate_classify_skips(job: dict[str, Any]) -> None:
@@ -510,17 +510,30 @@ def _reset_page_stage(job: dict[str, Any], page: int, stage: str, *, detail: str
 
 def _stop_if_requested(job: dict[str, Any]) -> bool:
     current = job_store.load_job(str(job["doc_id"]))
-    if current.get("pause_requested"):
+    if not current or str(current.get("job_id") or "") != str(job.get("job_id") or ""):
+        return True
+    current_status = str(current.get("status") or "")
+    if current_status in {"cancelled", "paused"}:
         job.update(current)
-        job_store.append_log(job, "Pause requested; stopping after current stage.")
-        job_store.finalize_job(job, "paused")
         return True
     if current.get("cancel_requested"):
         job.update(current)
-        job_store.append_log(job, "Cancellation requested; stopping after current stage.")
+        job_store.append_log(job, "Cancellation requested; stopped after the current page.")
         job_store.finalize_job(job, "cancelled")
         return True
+    if current.get("pause_requested"):
+        job.update(current)
+        job_store.append_log(job, "Pause requested; stopped after the current page.")
+        job_store.finalize_job(job, "paused")
+        return True
     return False
+
+
+def _control_requested(job: dict[str, Any]) -> bool:
+    current = job_store.load_job(str(job["doc_id"]))
+    if not current or str(current.get("job_id") or "") != str(job.get("job_id") or ""):
+        return True
+    return bool(current.get("pause_requested") or current.get("cancel_requested"))
 
 
 def _resolve_pdf_source(doc_id: str, raw_source: str | None) -> Path | None:

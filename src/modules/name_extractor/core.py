@@ -23,6 +23,7 @@ from .v2 import run_v2_pipeline
 
 
 ProgressCallback = Callable[[str, int, int, Path], None]
+ShouldStopCallback = Callable[[], bool]
 
 RERUN_ALLOWED = (
     "mention_scan",
@@ -205,6 +206,7 @@ def run_folder(
     resume: bool = True,
     wait_ready: bool = True,
     progress: ProgressCallback | None = None,
+    should_stop: ShouldStopCallback | None = None,
 ) -> dict[str, Any]:
     input_path = Path(input_dir)
     classify_path = Path(classify_dir)
@@ -220,7 +222,11 @@ def run_folder(
     errors = 0
     summary_pages: list[dict[str, Any]] = []
 
+    interrupted = False
     for index, item in enumerate(extractable_pages, start=1):
+        if should_stop and should_stop():
+            interrupted = True
+            break
         page = item["page"]
         out_file = output_path / f"p{page:03d}.names.json"
         if resume and artifact_ok(out_file, "json"):
@@ -274,7 +280,8 @@ def run_folder(
         "completed_pages": completed,
         "skipped_pages": skipped,
         "error_pages": errors,
-        "status": _summary_status(len(extractable_pages), completed, skipped, errors),
+        "status": "interrupted" if interrupted else _summary_status(len(extractable_pages), completed, skipped, errors),
+        "interrupted": interrupted,
         "created_at": _utc_now(),
         "pages": summary_pages,
     }

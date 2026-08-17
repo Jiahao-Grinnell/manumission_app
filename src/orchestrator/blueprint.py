@@ -16,7 +16,7 @@ from shared.config import settings
 from shared.paths import doc_paths, normalize_doc_id
 
 from . import job_store
-from .name_review import apply_corrected_names, name_review_file_map, parse_name_page_csv
+from .name_review import apply_corrected_names, clear_uploaded_name_review, name_review_file_map, parse_name_page_csv
 from .pipeline import run_document
 
 
@@ -29,20 +29,24 @@ bp = Blueprint(
 )
 
 _WORKERS: dict[str, threading.Thread] = {}
-_ACTIVE_JOB_STATUSES = {"running", "cancelling", "pausing"}
+_CONTROL_LOCKS: dict[str, threading.RLock] = {}
+_CONTROL_LOCKS_GUARD = threading.Lock()
+_ACTIVE_JOB_STATUSES = {"pending", "running", "cancelling", "pausing"}
 _TERMINAL_STREAM_STATUSES = {"done", "done_with_errors", "failed", "cancelled", "paused", "awaiting_name_review"}
 
 
 @bp.get("/")
 def index():
-    jobs = job_store.list_jobs()
-    jobs = [_coerce_orphaned_job(job) for job in jobs]
-    selected_job_id = request.args.get("job_id") or (jobs[0]["job_id"] if jobs else "")
-    selected_job = _coerce_orphaned_job(job_store.load_job_by_id(selected_job_id)) if selected_job_id else {}
+    job_records = [_coerce_orphaned_job(job) for job in job_store.list_jobs()]
+    selected_job_id = request.args.get("job_id") or (job_records[0]["job_id"] if job_records else "")
+    selected_job = next(
+        (job for job in job_records if str(job.get("job_id") or "") == str(selected_job_id)),
+        {},
+    )
     selected_job_payload = _job_payload(selected_job) if selected_job else {}
     return render_template(
         "dashboard.html",
-        jobs=jobs,
+        jobs=[_job_summary(job) for job in job_records],
         selected_job=selected_job_payload,
         selected_job_id=selected_job_id,
         progress_rows=_stage_progress_rows(selected_job_payload),
@@ -53,7 +57,7 @@ def index():
 
 @bp.get("/jobs")
 def jobs():
-    return jsonify({"jobs": [_coerce_orphaned_job(job) for job in job_store.list_jobs()]})
+    return jsonify({"jobs": [_job_summary(_coerce_orphaned_job(job)) for job in job_store.list_jobs()]})
 
 
 @bp.post("/run")
@@ -67,11 +71,11 @@ def run():
     ocr_model = str(payload.get("ocr_model") or settings.OCR_MODEL)
     text_model = str(payload.get("text_model") or settings.OLLAMA_MODEL)
 
+    uploaded_pdf_path: Path | None = None
     if uploaded and uploaded.filename:
         doc_id = normalize_doc_id(raw_doc_id or Path(uploaded.filename).stem)
-        settings.input_pdfs_dir.mkdir(parents=True, exist_ok=True)
         pdf_path = settings.input_pdfs_dir / f"{doc_id}.pdf"
-        uploaded.save(pdf_path)
+        uploaded_pdf_path = pdf_path
         source_pdf = str(pdf_path)
     elif source_pdf_name:
         source_name = Path(source_pdf_name).name
@@ -87,63 +91,69 @@ def run():
     else:
         abort(400, "Provide a PDF upload, an input PDF name, or a doc_id")
 
-    current = job_store.latest_job_for_doc(doc_id)
-    if current and str(current.get("status") or "") in _ACTIVE_JOB_STATUSES:
-        return jsonify(_job_payload(current)), 409
+    with _control_lock(doc_id):
+        current = job_store.latest_job_for_doc(doc_id)
+        if current and str(current.get("status") or "") in _ACTIVE_JOB_STATUSES:
+            return jsonify(_job_payload(current)), 409
 
-    job = job_store.create_job(
-        doc_id,
-        source_pdf=Path(source_pdf).name if source_pdf else "",
-        dpi=dpi,
-        resume=resume,
-        ocr_model=ocr_model,
-        text_model=text_model,
-    )
-    _start_worker(
-        job["job_id"],
-        doc_id,
-        {
-            "source_pdf": source_pdf,
-            "dpi": dpi,
-            "resume": resume,
-            "ocr_model": ocr_model,
-            "text_model": text_model,
-        },
-    )
+        if uploaded_pdf_path is not None:
+            settings.input_pdfs_dir.mkdir(parents=True, exist_ok=True)
+            uploaded.save(uploaded_pdf_path)
+
+        job = job_store.create_job(
+            doc_id,
+            source_pdf=Path(source_pdf).name if source_pdf else "",
+            dpi=dpi,
+            resume=resume,
+            ocr_model=ocr_model,
+            text_model=text_model,
+        )
+        _start_worker(
+            job["job_id"],
+            doc_id,
+            {
+                "source_pdf": source_pdf,
+                "dpi": dpi,
+                "resume": resume,
+                "ocr_model": ocr_model,
+                "text_model": text_model,
+            },
+        )
     return jsonify(_job_payload(job))
 
 
 @bp.post("/resume/<doc_id>")
 def resume(doc_id: str):
     normalized_doc_id = normalize_doc_id(doc_id)
-    current = job_store.latest_job_for_doc(normalized_doc_id)
-    if current and str(current.get("status") or "") in _ACTIVE_JOB_STATUSES:
-        return jsonify(_job_payload(current)), 409
-    if current and str(current.get("status") or "") == "awaiting_name_review":
-        return jsonify(_job_payload(current)), 409
-    review = current.get("name_review") if isinstance(current, dict) else {}
-    review_status = str((review if isinstance(review, dict) else {}).get("status") or "")
-    continue_after_review = review_status in {"accepted", "uploaded"}
-    existing_pdf = doc_paths(normalized_doc_id).pdf
-    job = job_store.create_job(
-        normalized_doc_id,
-        source_pdf=existing_pdf.name if existing_pdf.exists() else "",
-        dpi=int((current or {}).get("dpi") or 300),
-        resume=True,
-        ocr_model=str((current or {}).get("ocr_model") or settings.OCR_MODEL),
-        text_model=str((current or {}).get("text_model") or settings.OLLAMA_MODEL),
-    )
-    options = {
-        "source_pdf": str(existing_pdf) if existing_pdf.exists() else "",
-        "dpi": int((current or {}).get("dpi") or 300),
-        "resume": True,
-        "ocr_model": str((current or {}).get("ocr_model") or settings.OCR_MODEL),
-        "text_model": str((current or {}).get("text_model") or settings.OLLAMA_MODEL),
-    }
-    if continue_after_review:
-        options["name_review_completed"] = True
-        options["continue_after_name_review"] = True
-    _start_worker(job["job_id"], normalized_doc_id, options)
+    with _control_lock(normalized_doc_id):
+        current = job_store.latest_job_for_doc(normalized_doc_id)
+        if current and str(current.get("status") or "") in _ACTIVE_JOB_STATUSES:
+            return jsonify(_job_payload(current)), 409
+        if current and str(current.get("status") or "") == "awaiting_name_review":
+            return jsonify(_job_payload(current)), 409
+        review = current.get("name_review") if isinstance(current, dict) else {}
+        review_status = str((review if isinstance(review, dict) else {}).get("status") or "")
+        continue_after_review = review_status in {"accepted", "uploaded"}
+        existing_pdf = doc_paths(normalized_doc_id).pdf
+        job = job_store.create_job(
+            normalized_doc_id,
+            source_pdf=existing_pdf.name if existing_pdf.exists() else "",
+            dpi=int((current or {}).get("dpi") or 300),
+            resume=True,
+            ocr_model=str((current or {}).get("ocr_model") or settings.OCR_MODEL),
+            text_model=str((current or {}).get("text_model") or settings.OLLAMA_MODEL),
+        )
+        options = {
+            "source_pdf": str(existing_pdf) if existing_pdf.exists() else "",
+            "dpi": int((current or {}).get("dpi") or 300),
+            "resume": True,
+            "ocr_model": str((current or {}).get("ocr_model") or settings.OCR_MODEL),
+            "text_model": str((current or {}).get("text_model") or settings.OLLAMA_MODEL),
+        }
+        if continue_after_review:
+            options["name_review_completed"] = True
+            options["continue_after_name_review"] = True
+        _start_worker(job["job_id"], normalized_doc_id, options)
     return jsonify(_job_payload(job))
 
 
@@ -152,62 +162,74 @@ def continue_name_review(job_id: str):
     current = _coerce_orphaned_job(job_store.load_job_by_id(job_id))
     if not current:
         abort(404)
-    if str(current.get("status") or "") in _ACTIVE_JOB_STATUSES:
-        return jsonify(_job_payload(current)), 409
-
     doc_id = normalize_doc_id(str(current.get("doc_id") or ""))
-    paths = doc_paths(doc_id)
-    uploaded = request.files.get("names_csv")
-    review = dict(current.get("name_review") or {})
-    if uploaded and uploaded.filename:
-        raw = uploaded.read()
-        text = raw.decode("utf-8-sig")
-        rows = parse_name_page_csv(text)
-        applied = apply_corrected_names(doc_id, rows, paths=paths)
-        review.update(
-            {
-                "status": "uploaded",
-                "reviewed_at": job_store.utc_now(),
-                "uploaded_filename": Path(uploaded.filename).name,
-                "uploaded_csv": applied.get("uploaded_csv") or {},
-                "page_count": int(applied.get("page_count") or review.get("page_count") or 0),
-                "name_rows": int(applied.get("name_rows") or 0),
-                "cleared_downstream": applied.get("cleared_downstream") or {},
-                "message": "Uploaded corrected names CSV was applied to names.json artifacts.",
-            }
-        )
-        job_store.append_log(current, f"Applied corrected name review CSV with {review['name_rows']} row(s).")
-    else:
-        review.update(
-            {
-                "status": "accepted",
-                "reviewed_at": job_store.utc_now(),
-                "message": "Current extracted names were accepted without changes.",
-            }
-        )
-        job_store.append_log(current, "Accepted current extracted names without corrections.")
+    with _control_lock(doc_id):
+        current = _coerce_orphaned_job(job_store.load_job_by_id(job_id))
+        if not current:
+            abort(404)
+        if str(current.get("status") or "") in _ACTIVE_JOB_STATUSES:
+            return jsonify(_job_payload(current)), 409
 
-    current["name_review"] = review
-    current["status"] = "pending"
-    current["current_stage"] = ""
-    current["finished_at"] = ""
-    current["pause_requested"] = False
-    current["cancel_requested"] = False
-    job_store.save_job(current)
-    job_store.emit_event(current, "status", {"status": "pending"})
-    _start_worker(
-        str(current["job_id"]),
-        doc_id,
-        {
-            "source_pdf": _source_pdf_for_resume(doc_id, current),
-            "dpi": int(current.get("dpi") or 300),
-            "resume": True,
-            "ocr_model": str(current.get("ocr_model") or settings.OCR_MODEL),
-            "text_model": str(current.get("text_model") or settings.OLLAMA_MODEL),
-            "name_review_completed": True,
-            "continue_after_name_review": True,
-        },
-    )
+        paths = doc_paths(doc_id)
+        uploaded = request.files.get("names_csv")
+        review = dict(current.get("name_review") or {})
+        if uploaded and uploaded.filename:
+            raw = uploaded.read()
+            text = raw.decode("utf-8-sig")
+            rows = parse_name_page_csv(text)
+            applied = apply_corrected_names(doc_id, rows, paths=paths)
+            review.update(
+                {
+                    "status": "uploaded",
+                    "reviewed_at": job_store.utc_now(),
+                    "uploaded_filename": Path(uploaded.filename).name,
+                    "uploaded_csv": applied.get("uploaded_csv") or {},
+                    "page_count": int(applied.get("page_count") or review.get("page_count") or 0),
+                    "name_rows": int(applied.get("name_rows") or 0),
+                    "authoritative": True,
+                    "expected_name_page_pairs": int(applied.get("name_rows") or 0),
+                    "cleared_downstream": applied.get("cleared_downstream") or {},
+                    "message": "Uploaded corrected names CSV is authoritative for all downstream outputs.",
+                }
+            )
+            job_store.append_log(current, f"Applied corrected name review CSV with {review['name_rows']} row(s).")
+        else:
+            stale_uploaded_removed = clear_uploaded_name_review(doc_id, paths=paths)
+            review.pop("uploaded_filename", None)
+            review.pop("uploaded_csv", None)
+            review.update(
+                {
+                    "status": "accepted",
+                    "reviewed_at": job_store.utc_now(),
+                    "authoritative": False,
+                    "expected_name_page_pairs": int(review.get("name_rows") or 0),
+                    "stale_uploaded_removed": stale_uploaded_removed,
+                    "message": "Current extracted names were accepted without changes.",
+                }
+            )
+            job_store.append_log(current, "Accepted current extracted names without corrections.")
+
+        current["name_review"] = review
+        current["status"] = "pending"
+        current["current_stage"] = ""
+        current["finished_at"] = ""
+        current["pause_requested"] = False
+        current["cancel_requested"] = False
+        job_store.save_job(current)
+        job_store.emit_event(current, "status", {"status": "pending"})
+        _start_worker(
+            str(current["job_id"]),
+            doc_id,
+            {
+                "source_pdf": _source_pdf_for_resume(doc_id, current),
+                "dpi": int(current.get("dpi") or 300),
+                "resume": True,
+                "ocr_model": str(current.get("ocr_model") or settings.OCR_MODEL),
+                "text_model": str(current.get("text_model") or settings.OLLAMA_MODEL),
+                "name_review_completed": True,
+                "continue_after_name_review": True,
+            },
+        )
     return jsonify(_job_payload(current))
 
 
@@ -230,22 +252,23 @@ def cancel(job_id: str):
 @bp.post("/clear-results/<doc_id>")
 def clear_results(doc_id: str):
     normalized_doc_id = normalize_doc_id(doc_id)
-    current = job_store.latest_job_for_doc(normalized_doc_id)
-    if current and str(current.get("status") or "") in _ACTIVE_JOB_STATUSES:
-        return jsonify(_job_payload(current)), 409
+    with _control_lock(normalized_doc_id):
+        current = job_store.latest_job_for_doc(normalized_doc_id)
+        if current and str(current.get("status") or "") in _ACTIVE_JOB_STATUSES:
+            return jsonify(_job_payload(current)), 409
 
-    paths = doc_paths(normalized_doc_id)
-    removed: list[str] = []
-    for target in (
-        paths.pages_dir,
-        paths.ocr_dir,
-        paths.inter_dir,
-        paths.output_dir,
-        paths.logs_dir,
-        paths.audit_dir,
-    ):
-        if _remove_tree_if_exists(target):
-            removed.append(str(target))
+        paths = doc_paths(normalized_doc_id)
+        removed: list[str] = []
+        for target in (
+            paths.pages_dir,
+            paths.ocr_dir,
+            paths.inter_dir,
+            paths.output_dir,
+            paths.logs_dir,
+            paths.audit_dir,
+        ):
+            if _remove_tree_if_exists(target):
+                removed.append(str(target))
     return jsonify({"doc_id": normalized_doc_id, "status": "cleared", "removed": removed})
 
 
@@ -302,23 +325,37 @@ def stream(job_id: str):
         abort(404)
     doc_id = current["doc_id"]
     target = job_store.events_path(doc_id)
+    try:
+        initial_offset = target.stat().st_size
+    except OSError:
+        initial_offset = 0
 
     def generate():
-        offset = 0
+        offset = initial_offset
         yield _sse("snapshot", {"job_id": job_id})
-        idle_cycles = 0
+        if str(current.get("status") or "") in _TERMINAL_STREAM_STATUSES:
+            return
         while True:
-            latest = job_store.load_job_by_id(job_id)
+            latest = job_store.load_job(doc_id)
+            if not latest or str(latest.get("job_id") or "") != str(job_id):
+                break
             if not target.exists():
+                if str(latest.get("status") or "") in _TERMINAL_STREAM_STATUSES:
+                    break
                 time.sleep(1)
                 yield ": keep-alive\n\n"
                 continue
-            with target.open("r", encoding="utf-8", errors="replace") as fh:
-                fh.seek(offset)
-                chunk = fh.read()
-                offset = fh.tell()
+            try:
+                size = target.stat().st_size
+                if size < offset:
+                    offset = 0
+                with target.open("r", encoding="utf-8", errors="replace") as fh:
+                    fh.seek(offset)
+                    chunk = fh.read()
+                    offset = fh.tell()
+            except OSError:
+                chunk = ""
             if chunk:
-                idle_cycles = 0
                 for line in chunk.splitlines():
                     if not line.strip():
                         continue
@@ -326,15 +363,20 @@ def stream(job_id: str):
                         event = json.loads(line)
                     except Exception:
                         continue
+                    if str(event.get("job_id") or "") != str(job_id):
+                        continue
                     yield _sse(str(event.get("event") or "message"), event)
             else:
-                idle_cycles += 1
                 yield ": keep-alive\n\n"
                 time.sleep(1)
-            if latest and str(latest.get("status") or "") in _TERMINAL_STREAM_STATUSES and idle_cycles >= 2:
+            if str(latest.get("status") or "") in _TERMINAL_STREAM_STATUSES:
                 break
 
-    return Response(generate(), mimetype="text/event-stream")
+    return Response(
+        generate(),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 def _start_worker(job_id: str, doc_id: str, options: dict[str, Any]) -> None:
@@ -344,6 +386,31 @@ def _start_worker(job_id: str, doc_id: str, options: dict[str, Any]) -> None:
     thread = threading.Thread(target=worker, daemon=True)
     _WORKERS[job_id] = thread
     thread.start()
+
+
+def _control_lock(doc_id: str) -> threading.RLock:
+    normalized_doc_id = normalize_doc_id(doc_id)
+    with _CONTROL_LOCKS_GUARD:
+        lock = _CONTROL_LOCKS.get(normalized_doc_id)
+        if lock is None:
+            lock = threading.RLock()
+            _CONTROL_LOCKS[normalized_doc_id] = lock
+        return lock
+
+
+def _job_summary(job: dict[str, Any]) -> dict[str, Any]:
+    keys = (
+        "job_id",
+        "doc_id",
+        "status",
+        "current_stage",
+        "total_pages",
+        "created_at",
+        "updated_at",
+        "started_at",
+        "finished_at",
+    )
+    return {key: job.get(key) for key in keys}
 
 
 def _job_payload(job: dict[str, Any]) -> dict[str, Any]:

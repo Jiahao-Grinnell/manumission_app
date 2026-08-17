@@ -17,6 +17,7 @@ from .ingest_ocr import run_ingest_ocr
 
 
 ProgressCallback = Callable[[str, int, int, Path], None]
+ShouldStopCallback = Callable[[], bool]
 
 
 def run_stage(
@@ -29,6 +30,7 @@ def run_stage(
     ocr_model: str | None = None,
     text_model: str | None = None,
     progress: ProgressCallback | None = None,
+    should_stop: ShouldStopCallback | None = None,
 ) -> dict[str, Any]:
     if settings.ORCH_MODE != "inproc":
         raise NotImplementedError(f"Unsupported ORCH_MODE for Phase 5: {settings.ORCH_MODE}")
@@ -52,6 +54,7 @@ def run_stage(
             model=ocr_model,
             resume=resume,
             progress=progress,
+            should_stop=should_stop,
         )
     if stage == "ingest_ocr":
         if source_pdf is None:
@@ -63,7 +66,9 @@ def run_stage(
             doc_id=doc_id,
             model=ocr_model,
             resume=resume,
+            debug=False,
             progress=progress,
+            should_stop=should_stop,
         )
     if stage == "classify":
         return run_classifier_folder(
@@ -72,6 +77,7 @@ def run_stage(
             model=text_model,
             resume=resume,
             progress=progress,
+            should_stop=should_stop,
         )
     if stage == "names":
         return run_names_folder(
@@ -81,6 +87,7 @@ def run_stage(
             model=text_model,
             resume=resume,
             progress=progress,
+            should_stop=should_stop,
         )
     if stage == "meta":
         return run_metadata_folder(
@@ -90,6 +97,7 @@ def run_stage(
             model=text_model,
             resume=resume,
             progress=progress,
+            should_stop=should_stop,
         )
     if stage == "places":
         return run_places_folder(
@@ -99,6 +107,7 @@ def run_stage(
             model=text_model,
             resume=resume,
             progress=progress,
+            should_stop=should_stop,
         )
     if stage == "aggregate":
         result = aggregate(doc_id)

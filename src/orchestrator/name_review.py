@@ -47,13 +47,24 @@ def generate_name_review_artifacts(doc_id: str, *, paths: DocumentPaths | Any | 
         combined += "\n"
     _write_text_atomic(file_map["name_review_text"], combined)
     write_csv_atomic(file_map["name_review_csv"], rows, CSV_COLUMNS)
+    stale_uploaded_removed = clear_uploaded_name_review(doc_id, paths=resolved)
 
     return {
         "page_count": len(names_pages),
         "name_rows": len(rows),
         "combined_text": _file_info(file_map["name_review_text"]),
         "names_csv": _file_info(file_map["name_review_csv"]),
+        "stale_uploaded_removed": stale_uploaded_removed,
     }
+
+
+def clear_uploaded_name_review(doc_id: str, *, paths: DocumentPaths | Any | None = None) -> bool:
+    """Remove an upload from an older review checkpoint, if one exists."""
+    uploaded_path = name_review_file_map(doc_id, paths=paths)["name_review_uploaded_csv"]
+    if not uploaded_path.exists():
+        return False
+    uploaded_path.unlink()
+    return True
 
 
 def parse_name_page_csv(text: str) -> list[dict[str, Any]]:
@@ -84,7 +95,6 @@ def apply_corrected_names(
     resolved = paths or doc_paths(doc_id)
     file_map = name_review_file_map(doc_id, paths=resolved)
     normalized_rows = _dedupe_rows(rows)
-    write_csv_atomic(file_map["name_review_uploaded_csv"], normalized_rows, CSV_COLUMNS)
 
     grouped: dict[int, list[str]] = defaultdict(list)
     for row in normalized_rows:
@@ -92,12 +102,23 @@ def apply_corrected_names(
 
     existing_pages = {page for page, _ in _names_pages(Path(resolved.inter_dir))}
     target_pages = sorted(existing_pages | set(grouped.keys()))
+    page_plans: list[tuple[int, dict[str, Any] | None, dict[str, Any]]] = []
     for page in target_pages:
         ocr_path = Path(resolved.ocr_text(page))
         if not ocr_path.exists():
             raise ValueError(f"Cannot apply corrected names for page {page}: OCR text is missing")
-        _ensure_classify_extractable(resolved, page, has_names=bool(grouped.get(page)))
-        _write_corrected_names_json(resolved, page, grouped.get(page, []))
+        classify_record = _read_json_dict_strict(Path(resolved.classify(page)), label="classify")
+        names_record = _read_json_dict_strict(Path(resolved.names(page)), label="names")
+        page_names = grouped.get(page, [])
+        classify_payload = _extractable_classify_payload(classify_record, page) if page_names else None
+        names_payload = _corrected_names_payload(names_record, page, page_names)
+        page_plans.append((page, classify_payload, names_payload))
+
+    write_csv_atomic(file_map["name_review_uploaded_csv"], normalized_rows, CSV_COLUMNS)
+    for page, classify_payload, names_payload in page_plans:
+        if classify_payload is not None:
+            write_json_atomic(Path(resolved.classify(page)), classify_payload)
+        write_json_atomic(Path(resolved.names(page)), names_payload)
 
     cleared = _clear_downstream_artifacts(resolved)
     return {
@@ -134,23 +155,17 @@ def _load_named_people(path: Path) -> list[dict[str, str]]:
     return people
 
 
-def _ensure_classify_extractable(paths: DocumentPaths | Any, page: int, *, has_names: bool) -> None:
-    classify_path = Path(paths.classify(page))
-    record = _read_json_dict(classify_path)
-    if not has_names:
-        return
+def _extractable_classify_payload(record: dict[str, Any], page: int) -> dict[str, Any]:
     updated = dict(record)
     updated["page"] = int(updated.get("page") or page)
     updated["should_extract"] = True
     updated["skip_reason"] = None
     updated["report_type"] = str(updated.get("report_type") or "statement")
     updated["name_review_override"] = True
-    write_json_atomic(classify_path, updated)
+    return updated
 
 
-def _write_corrected_names_json(paths: DocumentPaths | Any, page: int, names: list[str]) -> None:
-    names_path = Path(paths.names(page))
-    existing = _read_json_dict(names_path)
+def _corrected_names_payload(existing: dict[str, Any], page: int, names: list[str]) -> dict[str, Any]:
     named_people = [{"name": name, "evidence": "Accepted from name review CSV."} for name in names]
     payload = dict(existing)
     payload.update(
@@ -169,7 +184,7 @@ def _write_corrected_names_json(paths: DocumentPaths | Any, page: int, names: li
         "names": named_people,
     }
     payload["passes"] = passes
-    write_json_atomic(names_path, payload)
+    return payload
 
 
 def _dedupe_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -180,12 +195,12 @@ def _dedupe_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         page = int(row.get("Page") or row.get("page") or 0)
         if not name or page <= 0:
             continue
-        key = (page, name.casefold())
+        key = (page, name)
         if key in seen:
             continue
         seen.add(key)
         result.append({"Name": name, "Page": page})
-    return sorted(result, key=lambda item: (int(item["Page"]), str(item["Name"]).casefold()))
+    return result
 
 
 def _clear_downstream_artifacts(paths: DocumentPaths | Any) -> dict[str, int]:
@@ -225,6 +240,18 @@ def _read_json_dict(path: Path) -> dict[str, Any]:
     except Exception:
         return {}
     return data if isinstance(data, dict) else {}
+
+
+def _read_json_dict_strict(path: Path, *, label: str) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        data = read_json(path)
+    except Exception as exc:
+        raise ValueError(f"Cannot apply corrected names: {label} artifact {path.name} is invalid") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"Cannot apply corrected names: {label} artifact {path.name} must be a JSON object")
+    return data
 
 
 def _write_text_atomic(path: Path, content: str) -> None:

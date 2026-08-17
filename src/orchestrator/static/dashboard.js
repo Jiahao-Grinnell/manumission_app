@@ -36,7 +36,9 @@
     return String(value == null ? "" : value)
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;");
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
   }
 
   function replaceUnderscores(value) {
@@ -73,14 +75,14 @@
     var opts = options || {};
     if (window.fetch) {
       window.fetch(url, opts).then(function (response) {
-        if (!response.ok) {
-          callback(null, null, response);
-          return;
-        }
         response.json().then(function (payload) {
           callback(null, payload, response);
         }).catch(function (error) {
-          callback(error);
+          if (response.ok) {
+            callback(error);
+          } else {
+            callback(null, null, response);
+          }
         });
       }).catch(function (error) {
         callback(error);
@@ -95,14 +97,18 @@
       if (xhr.readyState !== 4) {
         return;
       }
-      if (xhr.status < 200 || xhr.status >= 300) {
-        callback(null, null, { ok: false, status: xhr.status });
-        return;
-      }
       try {
-        callback(null, JSON.parse(xhr.responseText), { ok: true, status: xhr.status });
+        callback(
+          null,
+          JSON.parse(xhr.responseText),
+          { ok: xhr.status >= 200 && xhr.status < 300, status: xhr.status }
+        );
       } catch (error) {
-        callback(error);
+        if (xhr.status >= 200 && xhr.status < 300) {
+          callback(error);
+        } else {
+          callback(null, null, { ok: false, status: xhr.status });
+        }
       }
     };
     xhr.onerror = function () {
@@ -133,15 +139,31 @@
     var jobList = byId("job-list");
     var uploadForm = byId("upload-form");
     var existingForm = byId("existing-form");
+    var startUploadButton = byId("start-upload");
+    var startExistingButton = byId("start-existing");
     var resumeButton = byId("resume-job");
     var pauseButton = byId("pause-job");
     var cancelButton = byId("cancel-job");
     var clearResultsButton = byId("clear-results");
+    var actionFeedback = byId("action-feedback");
+    var actionFeedbackTitle = byId("action-feedback-title");
+    var actionFeedbackDetail = byId("action-feedback-detail");
+    var actionProgressTrack = byId("action-progress-track");
+    var actionProgressFill = byId("action-progress-fill");
     var currentJobId = initialJobId;
     var currentPayload = initialJob || {};
     var source = null;
+    var sourceJobId = "";
+    var streamConnected = false;
     var pollHandle = null;
     var reconnectHandle = null;
+    var reconnectAttempts = 0;
+    var refreshHandle = null;
+    var refreshInFlight = false;
+    var refreshQueued = false;
+    var lastJobsRefreshAt = 0;
+    var actionVersion = 0;
+    var actionHideHandle = null;
 
     var stageOrder = ["ingest", "ocr", "classify", "names", "meta", "places", "aggregate"];
     var stageLabels = {
@@ -184,6 +206,122 @@
 
     function continueNameReviewUrl(jobId) {
       return window.__ORCH_CONTINUE_NAME_REVIEW_URL__.replace("__JOB_ID__", encodeURIComponent(jobId));
+    }
+
+    function isActiveStatus(status) {
+      return includes(["pending", "running", "cancelling", "pausing"], status || "");
+    }
+
+    function isTerminalStatus(status) {
+      return includes(["done", "done_with_errors", "failed", "cancelled", "paused", "awaiting_name_review"], status || "");
+    }
+
+    function isButtonBusy(button) {
+      return Boolean(button && button.getAttribute("aria-busy") === "true");
+    }
+
+    function setButtonBusy(button, busy, label) {
+      if (!button) {
+        return;
+      }
+      if (busy) {
+        if (!button.dataset.idleLabel) {
+          button.dataset.idleLabel = button.textContent;
+        }
+        button.textContent = label || "Working...";
+        button.disabled = true;
+        button.classList.add("is-busy");
+        button.setAttribute("aria-busy", "true");
+        return;
+      }
+      button.textContent = button.dataset.idleLabel || button.textContent;
+      button.classList.remove("is-busy");
+      button.removeAttribute("aria-busy");
+      button.disabled = false;
+    }
+
+    function showActionFeedback(title, detail, percent) {
+      var hasPercent = percent !== null && percent !== undefined && percent !== "";
+      var numericPercent = hasPercent ? Number(percent) : NaN;
+      if (!actionFeedback) {
+        return;
+      }
+      actionFeedback.hidden = false;
+      if (actionFeedbackTitle) {
+        actionFeedbackTitle.textContent = title || "Working...";
+      }
+      if (actionFeedbackDetail) {
+        actionFeedbackDetail.textContent = detail || "";
+      }
+      if (!actionProgressTrack || !actionProgressFill) {
+        return;
+      }
+      if (hasPercent && isFinite(numericPercent) && numericPercent >= 0) {
+        numericPercent = Math.max(0, Math.min(100, Math.round(numericPercent)));
+        actionProgressTrack.classList.remove("is-indeterminate");
+        actionProgressTrack.setAttribute("aria-valuemin", "0");
+        actionProgressTrack.setAttribute("aria-valuemax", "100");
+        actionProgressTrack.setAttribute("aria-valuenow", String(numericPercent));
+        actionProgressFill.style.width = numericPercent + "%";
+      } else {
+        actionProgressTrack.classList.add("is-indeterminate");
+        actionProgressTrack.removeAttribute("aria-valuenow");
+        actionProgressFill.style.width = "";
+      }
+    }
+
+    function beginAction(button, title, detail, buttonLabel) {
+      actionVersion += 1;
+      if (actionHideHandle) {
+        window.clearTimeout(actionHideHandle);
+        actionHideHandle = null;
+      }
+      setButtonBusy(button, true, buttonLabel);
+      showActionFeedback(title, detail, null);
+      return actionVersion;
+    }
+
+    function finishAction(button, token, title, detail, keepVisible) {
+      setButtonBusy(button, false);
+      showActionFeedback(title, detail, 100);
+      if (!keepVisible) {
+        actionHideHandle = window.setTimeout(function () {
+          if (actionFeedback && token === actionVersion) {
+            actionFeedback.hidden = true;
+          }
+        }, 2600);
+      }
+    }
+
+    function failAction(button, title, detail) {
+      setButtonBusy(button, false);
+      showActionFeedback(title || "Request failed", detail || "Check the error below and try again.", 0);
+    }
+
+    function setLaunchControlsDisabled(disabled, activeButton) {
+      var buttons = [startUploadButton, startExistingButton];
+      var index;
+      for (index = 0; index < buttons.length; index += 1) {
+        if (!buttons[index]) {
+          continue;
+        }
+        if (disabled) {
+          buttons[index].disabled = true;
+        } else if (buttons[index] !== activeButton || !isButtonBusy(buttons[index])) {
+          buttons[index].disabled = false;
+        }
+      }
+    }
+
+    function formatBytes(value) {
+      var bytes = Number(value || 0);
+      if (bytes < 1024) {
+        return Math.round(bytes) + " B";
+      }
+      if (bytes < 1024 * 1024) {
+        return (bytes / 1024).toFixed(1) + " KB";
+      }
+      return (bytes / (1024 * 1024)).toFixed(1) + " MB";
     }
 
     function stageStateClass(state) {
@@ -299,6 +437,8 @@
       var data;
       var stats;
       var metrics;
+      var rawMetrics;
+      var authority;
       var cleanup;
       var html = "";
       var index;
@@ -312,8 +452,24 @@
       }
       data = summary.data || {};
       stats = data.stats || {};
-      metrics = objectEntries(stats).slice(0, 8);
+      rawMetrics = objectEntries(stats);
+      metrics = [];
+      for (index = 0; index < rawMetrics.length && metrics.length < 8; index += 1) {
+        if (rawMetrics[index][1] == null || typeof rawMetrics[index][1] !== "object") {
+          metrics.push(rawMetrics[index]);
+        }
+      }
+      authority = stats.authoritative_name_review || {};
       cleanup = Array.isArray(data.cleanup_actions) ? data.cleanup_actions.slice(0, 6) : [];
+
+      if (authority.enabled) {
+        html += '<div class="review-verification">';
+        html += '<strong>Reviewed roster verified</strong>';
+        html += '<span>Expected ' + escapeHtml(authority.expected_name_page_pairs || 0);
+        html += ' &middot; Detail ' + escapeHtml(authority.detail_name_page_pairs || 0);
+        html += ' &middot; Places ' + escapeHtml(authority.place_name_page_pairs || 0) + '</span>';
+        html += '</div>';
+      }
 
       html += '<div class="summary-metrics">';
       if (!metrics.length) {
@@ -435,7 +591,7 @@
         nameReviewFiles.innerHTML = html;
       }
       if (continueNameReviewButton) {
-        continueNameReviewButton.disabled = !currentJobId || !canContinue;
+        continueNameReviewButton.disabled = isButtonBusy(continueNameReviewButton) || !currentJobId || !canContinue;
       }
       if (nameReviewForm) {
         nameReviewForm.classList.toggle("muted", !canContinue);
@@ -465,27 +621,27 @@
 
     function syncControls(payload) {
       var status = payload.status || "";
-      var active = includes(["running", "cancelling", "pausing"], status);
-      var canPause = status === "running";
-      var canCancel = includes(["running", "pausing"], status);
+      var active = isActiveStatus(status);
+      var canPause = includes(["pending", "running"], status);
+      var canCancel = includes(["pending", "running", "pausing"], status);
       var docId = payload.doc_id || "";
       var jobId = payload.job_id || "";
 
       if (resumeButton) {
         resumeButton.dataset.docId = docId;
-        resumeButton.disabled = !docId || active || status === "awaiting_name_review";
+        resumeButton.disabled = isButtonBusy(resumeButton) || !docId || active || status === "awaiting_name_review";
       }
       if (pauseButton) {
         pauseButton.dataset.jobId = jobId;
-        pauseButton.disabled = !jobId || !canPause;
+        pauseButton.disabled = isButtonBusy(pauseButton) || !jobId || !canPause;
       }
       if (cancelButton) {
         cancelButton.dataset.jobId = jobId;
-        cancelButton.disabled = !jobId || !canCancel;
+        cancelButton.disabled = isButtonBusy(cancelButton) || !jobId || !canCancel;
       }
       if (clearResultsButton) {
         clearResultsButton.dataset.docId = docId;
-        clearResultsButton.disabled = !docId || active;
+        clearResultsButton.disabled = isButtonBusy(clearResultsButton) || !docId || active;
       }
     }
 
@@ -522,7 +678,7 @@
       renderLog(payload);
       renderNameReview(payload);
       syncControls(payload);
-      syncPolling();
+      syncTransport();
       syncHistory(currentJobId);
     }
 
@@ -533,6 +689,7 @@
         }
         return;
       }
+      lastJobsRefreshAt = Date.now();
       requestJson(window.__ORCH_JOBS_URL__, null, function (error, payload) {
         if (error) {
           if (done) {
@@ -547,6 +704,12 @@
           done();
         }
       });
+    }
+
+    function maybeRefreshJobs(force) {
+      if (force || !lastJobsRefreshAt || Date.now() - lastJobsRefreshAt >= 10000) {
+        refreshJobs();
+      }
     }
 
     function refreshOutputs(jobId, done) {
@@ -579,6 +742,7 @@
     }
 
     function refresh(jobId, done) {
+      var previousStatus = currentPayload.status || "";
       if (!jobId) {
         if (done) {
           done();
@@ -599,12 +763,54 @@
           }
           return;
         }
+        if (jobId !== currentJobId) {
+          if (done) {
+            done();
+          }
+          return;
+        }
         clearClientError();
         render(payload);
-        refreshJobs(function () {
-          refreshOutputs(payload.job_id, done);
-        });
+        maybeRefreshJobs(previousStatus !== (payload.status || ""));
+        if (isTerminalStatus(payload.status) && previousStatus !== payload.status) {
+          refreshOutputs(payload.job_id);
+        }
+        if (done) {
+          done();
+        }
       });
+    }
+
+    function scheduleRefresh(jobId, delay) {
+      if (!jobId || jobId !== currentJobId) {
+        return;
+      }
+      refreshQueued = true;
+      if (refreshHandle || refreshInFlight) {
+        return;
+      }
+      refreshHandle = window.setTimeout(function () {
+        var targetJobId = currentJobId;
+        refreshHandle = null;
+        if (!refreshQueued || !targetJobId) {
+          return;
+        }
+        refreshQueued = false;
+        refreshInFlight = true;
+        refresh(targetJobId, function () {
+          refreshInFlight = false;
+          if (refreshQueued && currentJobId) {
+            scheduleRefresh(currentJobId, 200);
+          }
+        });
+      }, typeof delay === "number" ? delay : 250);
+    }
+
+    function stopPolling() {
+      if (pollHandle) {
+        window.clearInterval(pollHandle);
+        pollHandle = null;
+      }
     }
 
     function stopReconnect() {
@@ -616,73 +822,196 @@
 
     function syncPolling() {
       var status = currentPayload.status || "";
-      var shouldPoll = Boolean(currentJobId) && includes(["pending", "running", "pausing", "cancelling"], status);
+      var shouldPoll = Boolean(currentJobId) && isActiveStatus(status) && !streamConnected;
       if (!shouldPoll) {
-        if (pollHandle) {
-          window.clearInterval(pollHandle);
-          pollHandle = null;
-        }
+        stopPolling();
         return;
       }
       if (!pollHandle) {
         pollHandle = window.setInterval(function () {
           if (currentJobId) {
-            refresh(currentJobId);
+            scheduleRefresh(currentJobId, 0);
           }
         }, 3000);
       }
     }
 
     function scheduleReconnect(jobId) {
+      var delay;
       stopReconnect();
+      if (currentJobId !== jobId || !isActiveStatus(currentPayload.status)) {
+        return;
+      }
+      delay = Math.min(15000, 1000 * Math.pow(2, reconnectAttempts));
+      reconnectAttempts += 1;
       reconnectHandle = window.setTimeout(function () {
-        if (currentJobId === jobId) {
+        if (currentJobId === jobId && isActiveStatus(currentPayload.status)) {
           connect(jobId);
         }
-      }, 2000);
+      }, delay);
+    }
+
+    function closeSource() {
+      if (source) {
+        source.close();
+      }
+      source = null;
+      sourceJobId = "";
+      streamConnected = false;
+    }
+
+    function syncTransport() {
+      if (!currentJobId || !isActiveStatus(currentPayload.status)) {
+        stopReconnect();
+        closeSource();
+        stopPolling();
+        return;
+      }
+      syncPolling();
     }
 
     function connect(jobId) {
+      var eventSource;
+      var eventNames;
+      var index;
       if (!jobId) {
         showClientStatus("No live job selected.");
         return;
       }
-      if (source) {
-        source.close();
-        source = null;
+      if (jobId !== currentJobId || !isActiveStatus(currentPayload.status)) {
+        syncTransport();
+        return;
       }
+      if (source && sourceJobId === jobId) {
+        return;
+      }
+      closeSource();
       if (!window.EventSource) {
         showClientStatus("Using polling fallback for live updates.");
         syncPolling();
         return;
       }
-      source = new EventSource(streamUrl(jobId));
-      source.onopen = function () {
+      eventSource = new EventSource(streamUrl(jobId));
+      source = eventSource;
+      sourceJobId = jobId;
+      eventSource.onopen = function () {
+        if (source !== eventSource) {
+          return;
+        }
+        streamConnected = true;
+        reconnectAttempts = 0;
+        stopPolling();
         clearClientError();
         showClientStatus("Live updates connected.");
       };
-      source.addEventListener("snapshot", function () { refresh(jobId); });
-      source.addEventListener("status", function () { refresh(jobId); });
-      source.addEventListener("page_updated", function () { refresh(jobId); });
-      source.addEventListener("log", function () { refresh(jobId); });
-      source.addEventListener("pause_requested", function () { refresh(jobId); });
-      source.addEventListener("cancel_requested", function () { refresh(jobId); });
-      source.addEventListener("done", function () { refresh(jobId); });
-      source.onerror = function () {
+      eventNames = ["snapshot", "status", "page_updated", "log", "pause_requested", "cancel_requested", "done"];
+      for (index = 0; index < eventNames.length; index += 1) {
+        eventSource.addEventListener(eventNames[index], function () {
+          scheduleRefresh(jobId, 200);
+        });
+      }
+      eventSource.onerror = function () {
+        if (source !== eventSource) {
+          return;
+        }
+        closeSource();
+        if (!isActiveStatus(currentPayload.status)) {
+          stopReconnect();
+          stopPolling();
+          return;
+        }
         showClientStatus("Live stream disconnected. Retrying...");
+        syncPolling();
         scheduleReconnect(jobId);
       };
     }
 
-    function postForm(form) {
+    function activateJob(payload) {
+      var nextJobId = (payload || {}).job_id || "";
+      if (!nextJobId) {
+        return;
+      }
+      if (currentJobId !== nextJobId) {
+        stopReconnect();
+        closeSource();
+        stopPolling();
+      }
+      currentJobId = nextJobId;
+      currentPayload = payload;
+      render(payload);
+      maybeRefreshJobs(true);
+      if (isTerminalStatus(payload.status)) {
+        refreshOutputs(nextJobId);
+      } else {
+        connect(nextJobId);
+        scheduleRefresh(nextJobId, 250);
+      }
+    }
+
+    function postFormWithProgress(form, url, onProgress, callback) {
+      var xhr = new XMLHttpRequest();
       var body = new FormData(form);
-      requestJson(window.__ORCH_RUN_URL__, { method: "POST", body: body }, function (error, payload, response) {
-        if (error || !response || !response.ok || !payload) {
-          showClientError("Run request failed.", error || new Error("Run request failed."));
-          return;
+      xhr.open("POST", url, true);
+      xhr.setRequestHeader("Accept", "application/json");
+      if (xhr.upload && onProgress) {
+        xhr.upload.onprogress = function (event) {
+          if (event.lengthComputable && event.total > 0) {
+            onProgress(Math.round((event.loaded / event.total) * 100), event.loaded, event.total);
+          }
+        };
+        xhr.upload.onload = function () {
+          onProgress(null, 0, 0);
+        };
+      }
+      xhr.onload = function () {
+        var payload = null;
+        try {
+          payload = xhr.responseText ? JSON.parse(xhr.responseText) : null;
+        } catch (error) {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            callback(error, null, { ok: false, status: xhr.status });
+            return;
+          }
         }
-        window.location.assign(window.__ORCH_INDEX_URL__ + "?job_id=" + encodeURIComponent(payload.job_id));
-      });
+        callback(null, payload, { ok: xhr.status >= 200 && xhr.status < 300, status: xhr.status });
+      };
+      xhr.onerror = function () {
+        callback(new Error("Network request failed."), null, { ok: false, status: 0 });
+      };
+      xhr.send(body);
+    }
+
+    function submitRunForm(form, button, uploadTitle) {
+      var token = beginAction(button, uploadTitle, "Preparing request...", "Starting...");
+      setLaunchControlsDisabled(true, button);
+      postFormWithProgress(
+        form,
+        window.__ORCH_RUN_URL__,
+        function (percent, loaded, total) {
+          if (percent == null) {
+            showActionFeedback("Starting pipeline", "Upload received; saving the PDF and creating the job...", null);
+          } else {
+            showActionFeedback(uploadTitle, formatBytes(loaded) + " of " + formatBytes(total), percent);
+          }
+        },
+        function (error, payload, response) {
+          setButtonBusy(button, false);
+          setLaunchControlsDisabled(false, button);
+          if (response && response.status === 409 && payload) {
+            finishAction(button, token, "Job already active", "Switched to the existing active job.", false);
+            activateJob(payload);
+            return;
+          }
+          if (error || !response || !response.ok || !payload) {
+            failAction(button, "Run request failed", "The job was not started. Check the error message and try again.");
+            showClientError("Run request failed.", error || new Error("Run request failed."));
+            return;
+          }
+          clearClientError();
+          finishAction(button, token, "Pipeline started", "Live status is loading now.", false);
+          activateJob(payload);
+        }
+      );
     }
 
     function postEmpty(url, callback) {
@@ -696,50 +1025,99 @@
     if (uploadForm) {
       uploadForm.addEventListener("submit", function (event) {
         event.preventDefault();
-        postForm(uploadForm);
+        if (isButtonBusy(startUploadButton)) {
+          return;
+        }
+        submitRunForm(uploadForm, startUploadButton, "Uploading PDF");
       });
     }
 
     if (existingForm) {
       existingForm.addEventListener("submit", function (event) {
         event.preventDefault();
-        postForm(existingForm);
+        if (isButtonBusy(startExistingButton)) {
+          return;
+        }
+        submitRunForm(existingForm, startExistingButton, "Starting registered PDF");
       });
     }
 
     if (resumeButton) {
       resumeButton.addEventListener("click", function () {
+        var token;
         if (!resumeButton.dataset.docId) {
           return;
         }
+        token = beginAction(resumeButton, "Resuming pipeline", "Creating a resumable worker...", "Resuming...");
         postEmpty(resumeUrl(resumeButton.dataset.docId), function (error, payload, response) {
+          if (response && response.status === 409 && payload) {
+            finishAction(resumeButton, token, "Job already active", "Switched to the existing active job.", false);
+            activateJob(payload);
+            return;
+          }
           if (error || !response || !response.ok || !payload) {
+            failAction(resumeButton, "Resume request failed", "The pipeline was not resumed.");
+            syncControls(currentPayload);
             showClientError("Resume request failed.", error || new Error("Resume request failed."));
             return;
           }
-          window.location.assign(window.__ORCH_INDEX_URL__ + "?job_id=" + encodeURIComponent(payload.job_id));
+          clearClientError();
+          finishAction(resumeButton, token, "Pipeline resumed", "Live status is loading now.", false);
+          activateJob(payload);
         });
       });
     }
 
     if (pauseButton) {
       pauseButton.addEventListener("click", function () {
-        if (!pauseButton.dataset.jobId) {
+        var jobId = pauseButton.dataset.jobId;
+        var previousStatus = currentPayload.status || "";
+        var token;
+        if (!jobId) {
           return;
         }
-        postEmpty(pauseUrl(pauseButton.dataset.jobId), function () {
-          refresh(pauseButton.dataset.jobId);
+        token = beginAction(pauseButton, "Requesting pause", "The active page will finish before the worker pauses.", "Requesting...");
+        currentPayload.status = "pausing";
+        render(currentPayload);
+        postEmpty(pauseUrl(jobId), function (error, payload, response) {
+          if (error || !response || !response.ok || !payload) {
+            currentPayload.status = previousStatus;
+            failAction(pauseButton, "Pause request failed", "The job is still running.");
+            render(currentPayload);
+            showClientError("Pause request failed.", error || new Error("Pause request failed."));
+            return;
+          }
+          clearClientError();
+          finishAction(pauseButton, token, "Pause requested", "The active page will finish before the worker pauses.", false);
+          render(payload);
+          showClientStatus("Pause request accepted; waiting for the active page to finish.");
         });
       });
     }
 
     if (cancelButton) {
       cancelButton.addEventListener("click", function () {
-        if (!cancelButton.dataset.jobId) {
+        var jobId = cancelButton.dataset.jobId;
+        var previousStatus = currentPayload.status || "";
+        var token;
+        if (!jobId) {
           return;
         }
-        postEmpty(cancelUrl(cancelButton.dataset.jobId), function () {
-          refresh(cancelButton.dataset.jobId);
+        token = beginAction(cancelButton, "Requesting cancellation", "The active page will finish before the worker stops.", "Requesting...");
+        currentPayload.status = "cancelling";
+        render(currentPayload);
+        postEmpty(cancelUrl(jobId), function (error, payload, response) {
+          if (error || !response || !response.ok || !payload) {
+            currentPayload.status = previousStatus;
+            failAction(cancelButton, "Cancel request failed", "The job is still running.");
+            render(currentPayload);
+            showClientError("Cancel request failed.", error || new Error("Cancel request failed."));
+            return;
+          }
+          clearClientError();
+          finishAction(cancelButton, token, "Cancellation requested", "The active page will finish before the worker stops.", false);
+          render(payload);
+          showClientStatus("Cancellation accepted; waiting for the active page to finish.");
         });
       });
     }
@@ -747,6 +1125,7 @@
     if (clearResultsButton) {
       clearResultsButton.addEventListener("click", function () {
         var confirmed;
+        var token;
         if (!clearResultsButton.dataset.docId) {
           return;
         }
@@ -754,11 +1133,15 @@
         if (!confirmed) {
           return;
         }
+        token = beginAction(clearResultsButton, "Clearing generated results", "The source PDF will be kept.", "Clearing...");
         postEmpty(clearResultsUrl(clearResultsButton.dataset.docId), function (error, payload, response) {
           if (error || !response || !response.ok) {
+            failAction(clearResultsButton, "Clear request failed", "No confirmation was received from the server.");
+            syncControls(currentPayload);
             showClientError("Clear results request failed.", error || new Error("Clear results request failed."));
             return;
           }
+          finishAction(clearResultsButton, token, "Results cleared", "Reloading the dashboard...", true);
           window.location.assign(window.__ORCH_INDEX_URL__);
         });
       });
@@ -766,32 +1149,73 @@
 
     if (nameReviewForm) {
       nameReviewForm.addEventListener("submit", function (event) {
-        var body;
+        var token;
+        var fileInput;
+        var hasFile;
         event.preventDefault();
-        if (!currentJobId) {
+        if (!currentJobId || isButtonBusy(continueNameReviewButton)) {
           return;
         }
-        body = new FormData(nameReviewForm);
-        requestJson(continueNameReviewUrl(currentJobId), { method: "POST", body: body }, function (error, payload, response) {
-          if (error || !response || !response.ok || !payload) {
-            showClientError("Name review continue request failed.", error || new Error("Name review continue request failed."));
-            return;
+        fileInput = nameReviewForm.querySelector('input[name="names_csv"]');
+        hasFile = Boolean(fileInput && fileInput.files && fileInput.files.length);
+        token = beginAction(
+          continueNameReviewButton,
+          hasFile ? "Uploading reviewed names" : "Accepting reviewed names",
+          "Preparing the authoritative Name/Page roster...",
+          "Continuing..."
+        );
+        postFormWithProgress(
+          nameReviewForm,
+          continueNameReviewUrl(currentJobId),
+          function (percent, loaded, total) {
+            if (percent == null) {
+              showActionFeedback("Applying reviewed names", "Clearing stale downstream artifacts and starting metadata...", null);
+            } else if (hasFile) {
+              showActionFeedback("Uploading reviewed names", formatBytes(loaded) + " of " + formatBytes(total), percent);
+            }
+          },
+          function (error, payload, response) {
+            if (response && response.status === 409 && payload) {
+              finishAction(continueNameReviewButton, token, "Review already continuing", "Switched to the active job.", false);
+              activateJob(payload);
+              return;
+            }
+            if (error || !response || !response.ok || !payload) {
+              failAction(continueNameReviewButton, "Name review request failed", "The reviewed roster was not continued.");
+              renderNameReview(currentPayload);
+              showClientError("Name review continue request failed.", error || new Error("Name review continue request failed."));
+              return;
+            }
+            clearClientError();
+            finishAction(continueNameReviewButton, token, "Reviewed roster accepted", "Metadata and places are starting now.", false);
+            activateJob(payload);
           }
-          window.location.assign(window.__ORCH_INDEX_URL__ + "?job_id=" + encodeURIComponent(payload.job_id));
-        });
+        );
       });
     }
 
     render(currentPayload);
     refreshJobs();
     if (currentJobId) {
+      refreshOutputs(currentJobId);
       refresh(currentJobId, function () {
-        connect(currentJobId);
+        if (isActiveStatus(currentPayload.status)) {
+          connect(currentJobId);
+        }
       });
     } else {
       refreshOutputs(currentJobId);
       showClientStatus("No live job selected.");
     }
+    window.addEventListener("pagehide", function () {
+      stopReconnect();
+      closeSource();
+      stopPolling();
+      if (refreshHandle) {
+        window.clearTimeout(refreshHandle);
+        refreshHandle = null;
+      }
+    });
   } catch (error) {
     showClientError("Dashboard refresh script failed to start. Server-rendered status is still shown below.", error);
   }

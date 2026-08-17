@@ -73,6 +73,132 @@ class OrchestratorBlueprintTests(unittest.TestCase):
                 self.assertEqual(status_payload["doc_id"], "demo")
                 self.assertEqual(status_payload["status"], "pending")
 
+    def test_jobs_endpoint_returns_lightweight_summaries(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake_settings = mock.Mock(
+                DATA_ROOT=root,
+                logs_root=root / "logs",
+                input_pdfs_dir=root / "input_pdfs",
+                OCR_MODEL="ocr-mock",
+                OLLAMA_MODEL="text-mock",
+            )
+            with (
+                mock.patch.object(orch_blueprint, "settings", fake_settings),
+                mock.patch.object(job_store, "settings", fake_settings),
+                mock.patch.object(orch_blueprint, "doc_paths", side_effect=lambda doc_id: _doc_paths(root, doc_id)),
+            ):
+                app = create_app()
+                client = app.test_client()
+                job = job_store.create_job("demo_summary")
+                job_store.ensure_pages(job, 2)
+                job["log_tail"] = ["large payload should stay out of /jobs"]
+                job_store.save_job(job)
+
+                response = client.get("/orchestrate/jobs")
+
+                self.assertEqual(response.status_code, 200)
+                summary = response.get_json()["jobs"][0]
+                self.assertEqual(summary["job_id"], job["job_id"])
+                self.assertEqual(summary["total_pages"], 2)
+                self.assertNotIn("pages", summary)
+                self.assertNotIn("log_tail", summary)
+
+    def test_active_upload_does_not_overwrite_existing_pdf(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake_settings = mock.Mock(
+                DATA_ROOT=root,
+                logs_root=root / "logs",
+                input_pdfs_dir=root / "input_pdfs",
+                OCR_MODEL="ocr-mock",
+                OLLAMA_MODEL="text-mock",
+            )
+            doc_id = "demo_active_upload"
+            paths = _doc_paths(root, doc_id)
+            paths.pdf.parent.mkdir(parents=True, exist_ok=True)
+            paths.pdf.write_bytes(b"original-pdf")
+            with (
+                mock.patch.object(orch_blueprint, "settings", fake_settings),
+                mock.patch.object(job_store, "settings", fake_settings),
+                mock.patch.object(orch_blueprint, "doc_paths", side_effect=lambda current_doc_id: _doc_paths(root, current_doc_id)),
+                mock.patch.object(orch_blueprint, "_start_worker") as start_worker,
+            ):
+                app = create_app()
+                client = app.test_client()
+                job_store.create_job(doc_id)
+
+                response = client.post(
+                    "/orchestrate/run",
+                    data={"doc_id": doc_id, "pdf": (io.BytesIO(b"replacement-pdf"), "replacement.pdf")},
+                    content_type="multipart/form-data",
+                )
+
+                self.assertEqual(response.status_code, 409)
+                start_worker.assert_not_called()
+                self.assertEqual(paths.pdf.read_bytes(), b"original-pdf")
+
+    def test_terminal_stream_starts_at_eof_without_replaying_history(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake_settings = mock.Mock(
+                DATA_ROOT=root,
+                logs_root=root / "logs",
+                input_pdfs_dir=root / "input_pdfs",
+                OCR_MODEL="ocr-mock",
+                OLLAMA_MODEL="text-mock",
+            )
+            with (
+                mock.patch.object(orch_blueprint, "settings", fake_settings),
+                mock.patch.object(job_store, "settings", fake_settings),
+                mock.patch.object(orch_blueprint, "doc_paths", side_effect=lambda doc_id: _doc_paths(root, doc_id)),
+            ):
+                app = create_app()
+                client = app.test_client()
+                job = job_store.create_job("demo_stream")
+                job_store.emit_event(job, "page_updated", {"page": 1})
+                job_store.finalize_job(job, "done")
+
+                response = client.get(f"/orchestrate/stream/{job['job_id']}")
+                body = response.get_data(as_text=True)
+
+                self.assertEqual(response.status_code, 200)
+                self.assertIn("event: snapshot", body)
+                self.assertNotIn("event: page_updated", body)
+                self.assertNotIn("event: done", body)
+
+    def test_stream_emits_event_appended_after_connection(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake_settings = mock.Mock(
+                DATA_ROOT=root,
+                logs_root=root / "logs",
+                input_pdfs_dir=root / "input_pdfs",
+                OCR_MODEL="ocr-mock",
+                OLLAMA_MODEL="text-mock",
+            )
+            with (
+                mock.patch.object(orch_blueprint, "settings", fake_settings),
+                mock.patch.object(job_store, "settings", fake_settings),
+                mock.patch.object(orch_blueprint, "doc_paths", side_effect=lambda doc_id: _doc_paths(root, doc_id)),
+            ):
+                app = create_app()
+                client = app.test_client()
+                job = job_store.create_job("demo_incremental_stream")
+                job["status"] = "running"
+                job_store.save_job(job)
+
+                response = client.get(f"/orchestrate/stream/{job['job_id']}", buffered=False)
+                iterator = iter(response.response)
+                first_chunk = next(iterator).decode("utf-8")
+                job_store.emit_event(job, "page_updated", {"page": 2})
+                second_chunk = next(iterator).decode("utf-8")
+                response.close()
+
+                self.assertIn("event: snapshot", first_chunk)
+                self.assertIn("event: page_updated", second_chunk)
+                self.assertIn('"page": 2', second_chunk)
+
     def test_pause_endpoint_marks_job_pausing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -244,6 +370,8 @@ class OrchestratorBlueprintTests(unittest.TestCase):
                 payload = response.get_json()
                 self.assertEqual(payload["name_review"]["status"], "uploaded")
                 self.assertEqual(payload["name_review"]["name_rows"], 2)
+                self.assertTrue(payload["name_review"]["authoritative"])
+                self.assertEqual(payload["name_review"]["expected_name_page_pairs"], 2)
                 start_worker.assert_called_once()
                 self.assertTrue(start_worker.call_args.args[2]["name_review_completed"])
                 self.assertTrue(start_worker.call_args.args[2]["continue_after_name_review"])
@@ -258,6 +386,47 @@ class OrchestratorBlueprintTests(unittest.TestCase):
             self.assertFalse(paths.meta(1).exists())
             self.assertFalse(paths.places(1).exists())
             self.assertFalse((paths.output_dir / "Detailed info.csv").exists())
+
+    def test_accepting_current_names_clears_stale_uploaded_roster(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake_settings = mock.Mock(
+                DATA_ROOT=root,
+                logs_root=root / "logs",
+                input_pdfs_dir=root / "input_pdfs",
+                OCR_MODEL="ocr-mock",
+                OLLAMA_MODEL="text-mock",
+            )
+            doc_id = "demo_accept_current"
+            paths = _doc_paths(root, doc_id)
+            paths.output_dir.mkdir(parents=True, exist_ok=True)
+            stale_roster = paths.output_dir / "name_review_uploaded_names.csv"
+            stale_roster.write_text("Name,Page\nOld Name,9\n", encoding="utf-8")
+
+            with (
+                mock.patch.object(orch_blueprint, "settings", fake_settings),
+                mock.patch.object(job_store, "settings", fake_settings),
+                mock.patch.object(orch_blueprint, "doc_paths", side_effect=lambda current_doc_id: _doc_paths(root, current_doc_id)),
+                mock.patch.object(name_review, "doc_paths", side_effect=lambda current_doc_id: _doc_paths(root, current_doc_id)),
+                mock.patch.object(orch_blueprint, "_start_worker") as start_worker,
+            ):
+                app = create_app()
+                client = app.test_client()
+                job = job_store.create_job(doc_id)
+                job["status"] = "awaiting_name_review"
+                job["name_review"] = {"status": "ready", "name_rows": 3}
+                job_store.save_job(job)
+
+                response = client.post(f"/orchestrate/continue-name-review/{job['job_id']}")
+
+                self.assertEqual(response.status_code, 200)
+                review = response.get_json()["name_review"]
+                self.assertEqual(review["status"], "accepted")
+                self.assertFalse(review["authoritative"])
+                self.assertEqual(review["expected_name_page_pairs"], 3)
+                self.assertTrue(review["stale_uploaded_removed"])
+                self.assertFalse(stale_roster.exists())
+                start_worker.assert_called_once()
 
     def test_resume_after_reviewed_job_continues_after_name_review(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

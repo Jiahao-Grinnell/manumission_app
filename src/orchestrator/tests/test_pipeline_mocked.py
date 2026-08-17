@@ -119,7 +119,7 @@ class PipelineMockedTests(unittest.TestCase):
             self.assertEqual(result["aggregate"]["state"], "done")
             self.assertFalse(paths.page_image(1).exists())
 
-    def test_pipeline_pause_requested_stops_after_current_stage(self) -> None:
+    def test_pipeline_pause_requested_stops_after_current_page(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             fake_settings = mock.Mock(
@@ -149,11 +149,15 @@ class PipelineMockedTests(unittest.TestCase):
 
             def fake_run_stage(stage, doc_id, **kwargs):
                 if stage == "ingest_ocr":
+                    summary_pages = []
                     for page in (1, 2):
+                        if kwargs["should_stop"]():
+                            break
                         text = paths.ocr_text(page)
                         kwargs["progress"]("render", page, 2, text)
                         text.write_text(f"ocr {page}", encoding="utf-8")
                         kwargs["progress"]("done", page, 2, text)
+                        summary_pages.append({"page": page, "status": "done", "text_file": text.name})
                         if page == 1:
                             current = job_store.load_job("demo_pause")
                             job_store.request_pause(current)
@@ -161,11 +165,9 @@ class PipelineMockedTests(unittest.TestCase):
                         "doc_id": doc_id,
                         "page_count": 2,
                         "total_pages": 2,
-                        "status": "complete",
-                        "pages": [
-                            {"page": 1, "status": "done", "text_file": "p001.txt"},
-                            {"page": 2, "status": "done", "text_file": "p002.txt"},
-                        ],
+                        "status": "interrupted",
+                        "interrupted": True,
+                        "pages": summary_pages,
                     }
                 raise AssertionError(stage)
 
@@ -181,7 +183,7 @@ class PipelineMockedTests(unittest.TestCase):
 
             self.assertEqual(result["status"], "paused")
             self.assertEqual(result["pages"][0]["ocr"]["state"], "done")
-            self.assertEqual(result["pages"][1]["ocr"]["state"], "done")
+            self.assertEqual(result["pages"][1]["ocr"]["state"], "pending")
             self.assertEqual(result["pages"][0]["classify"]["state"], "pending")
             self.assertEqual(result["aggregate"]["state"], "pending")
 

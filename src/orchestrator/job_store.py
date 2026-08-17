@@ -15,6 +15,7 @@ from shared.storage import write_json_atomic
 
 _LOCK = threading.Lock()
 _TAIL_LIMIT = 120
+_JOB_ID_TO_DOC_ID: dict[str, str] = {}
 PAGE_STAGE_KEYS = ("ingest", "ocr", "classify", "names", "meta", "places", "aggregate")
 
 
@@ -102,28 +103,42 @@ def save_job(job: dict[str, Any], *, reset_logs: bool = False) -> None:
     payload = dict(job)
     payload["doc_id"] = normalized_doc_id
     payload["updated_at"] = utc_now()
-    existing: dict[str, Any] = {}
-    if target.exists() and not reset_logs:
-        try:
-            loaded = json.loads(target.read_text(encoding="utf-8-sig"))
-        except Exception:
-            loaded = {}
-        existing = loaded if isinstance(loaded, dict) else {}
-    active_statuses = {"pending", "running", "pausing", "cancelling"}
-    if existing and str(payload.get("status") or "") in active_statuses:
-        if existing.get("cancel_requested") and not payload.get("pause_requested"):
-            payload["cancel_requested"] = True
-            if str(payload.get("status") or "") == "running":
-                payload["status"] = "cancelling"
-        if existing.get("pause_requested") and not payload.get("cancel_requested"):
-            payload["pause_requested"] = True
-            if str(payload.get("status") or "") == "running":
-                payload["status"] = "pausing"
-    if reset_logs:
-        log_path(normalized_doc_id).write_text("", encoding="utf-8")
-        events_path(normalized_doc_id).write_text("", encoding="utf-8")
     with _LOCK:
+        existing: dict[str, Any] = {}
+        if target.exists() and not reset_logs:
+            try:
+                loaded = json.loads(target.read_text(encoding="utf-8-sig"))
+            except Exception:
+                loaded = {}
+            existing = loaded if isinstance(loaded, dict) else {}
+        active_statuses = {"pending", "running", "pausing", "cancelling"}
+        same_job = str(existing.get("job_id") or "") == str(payload.get("job_id") or "")
+        if same_job and str(payload.get("status") or "") in active_statuses:
+            existing_status = str(existing.get("status") or "")
+            if existing_status in {"paused", "cancelled"}:
+                payload["status"] = existing_status
+                payload["current_stage"] = str(existing.get("current_stage") or "")
+                payload["finished_at"] = str(existing.get("finished_at") or payload.get("finished_at") or "")
+                payload["pause_requested"] = False
+                payload["cancel_requested"] = False
+            elif existing.get("cancel_requested") and not payload.get("pause_requested"):
+                payload["cancel_requested"] = True
+                if str(payload.get("status") or "") == "running":
+                    payload["status"] = "cancelling"
+            elif existing.get("pause_requested") and not payload.get("cancel_requested"):
+                payload["pause_requested"] = True
+                if str(payload.get("status") or "") == "running":
+                    payload["status"] = "pausing"
+        if reset_logs:
+            log_path(normalized_doc_id).write_text("", encoding="utf-8")
+            events_path(normalized_doc_id).write_text("", encoding="utf-8")
         write_json_atomic(target, payload)
+        payload_job_id = str(payload.get("job_id") or "")
+        for indexed_job_id, indexed_doc_id in list(_JOB_ID_TO_DOC_ID.items()):
+            if indexed_doc_id == normalized_doc_id and indexed_job_id != payload_job_id:
+                _JOB_ID_TO_DOC_ID.pop(indexed_job_id, None)
+        if payload_job_id:
+            _JOB_ID_TO_DOC_ID[payload_job_id] = normalized_doc_id
     job.clear()
     job.update(payload)
 
@@ -143,8 +158,14 @@ def list_jobs() -> list[dict[str, Any]]:
     root = settings.logs_root
     if not root.exists():
         return []
+    candidates: list[tuple[float, Path]] = []
+    for path in root.glob("*/job.json"):
+        try:
+            candidates.append((path.stat().st_mtime, path))
+        except OSError:
+            continue
     jobs: list[dict[str, Any]] = []
-    for path in sorted(root.glob("*/job.json"), key=lambda item: item.stat().st_mtime, reverse=True):
+    for _, path in sorted(candidates, key=lambda item: item[0], reverse=True):
         data = load_job(path.parent.name)
         if data:
             jobs.append(data)
@@ -152,8 +173,23 @@ def list_jobs() -> list[dict[str, Any]]:
 
 
 def load_job_by_id(job_id: str) -> dict[str, Any]:
+    normalized_job_id = str(job_id)
+    with _LOCK:
+        indexed_doc_id = _JOB_ID_TO_DOC_ID.get(normalized_job_id, "")
+    if indexed_doc_id:
+        indexed_job = load_job(indexed_doc_id)
+        if str(indexed_job.get("job_id") or "") == normalized_job_id:
+            return indexed_job
+        with _LOCK:
+            _JOB_ID_TO_DOC_ID.pop(normalized_job_id, None)
+
     for job in list_jobs():
-        if str(job.get("job_id") or "") == str(job_id):
+        candidate_job_id = str(job.get("job_id") or "")
+        candidate_doc_id = str(job.get("doc_id") or "")
+        if candidate_job_id and candidate_doc_id:
+            with _LOCK:
+                _JOB_ID_TO_DOC_ID[candidate_job_id] = candidate_doc_id
+        if candidate_job_id == normalized_job_id:
             return job
     return {}
 
@@ -278,8 +314,12 @@ def request_cancel(job: dict[str, Any]) -> dict[str, Any]:
     current = dict(job)
     current["cancel_requested"] = True
     current["pause_requested"] = False
-    if current.get("status") == "running":
+    if current.get("status") in {"running", "pausing"}:
         current["status"] = "cancelling"
+    elif current.get("status") == "pending":
+        current["status"] = "cancelled"
+        current["cancel_requested"] = False
+        current["finished_at"] = utc_now()
     save_job(current)
     emit_event(current, "cancel_requested", {"status": current["status"]})
     return current

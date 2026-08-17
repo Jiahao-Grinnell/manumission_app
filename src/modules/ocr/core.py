@@ -32,6 +32,7 @@ DEFAULT_OCR_PROMPT = (
 )
 
 ProgressCallback = Callable[[str, int, int, Path], None]
+ShouldStopCallback = Callable[[], bool]
 _FENCE_LINE = re.compile(r"^\s*```(?:[a-zA-Z0-9_-]+)?\s*$")
 _ASCII_PUNCTUATION_MAP = str.maketrans(
     {
@@ -337,6 +338,7 @@ def run_folder(
     timeout_s: int = 240,
     progress: ProgressCallback | None = None,
     wait_ready: bool = True,
+    should_stop: ShouldStopCallback | None = None,
 ) -> dict[str, Any]:
     input_path = Path(input_dir)
     output_path = Path(out_dir)
@@ -352,7 +354,11 @@ def run_folder(
     log_path = output_path / "run_status.log"
     log_path.write_text(f"=== OCR run {manifest['created_at']} model={selected_model} pages={len(images)} ===\n", encoding="utf-8")
 
+    interrupted = False
     for index, image in enumerate(images, start=1):
+        if should_stop and should_stop():
+            interrupted = True
+            break
         out_file = output_path / f"{image.stem}.txt"
         page = _page_number(image)
         page_meta = _page_entry(manifest, page, image.name)
@@ -398,6 +404,9 @@ def run_folder(
         write_json_atomic(output_path / "manifest.json", manifest)
 
     _refresh_manifest(manifest, output_path)
+    manifest["interrupted"] = interrupted
+    if interrupted:
+        manifest["status"] = "interrupted"
     write_json_atomic(output_path / "manifest.json", manifest)
     return manifest
 

@@ -81,6 +81,7 @@ def extract_for_name(
     report_type: str = "correspondence",
     classify_record: dict[str, Any] | None = None,
     client: OllamaClient | None = None,
+    authoritative_name: bool = False,
 ) -> PlacePersonResult:
     started = time.time()
     prepared_text = clean_ocr(ocr_text or "")
@@ -88,7 +89,7 @@ def extract_for_name(
     selected_client = client or OllamaClient()
     stats = CallStats()
 
-    if not _name_in_ocr(name, prepared_text):
+    if not authoritative_name and not _name_in_ocr(name, prepared_text):
         elapsed = round(time.time() - started, 2)
         skipped_stage = {
             "stage": "skipped",
@@ -201,7 +202,9 @@ def run_page_file(
 
     ocr_text = source.read_text(encoding="utf-8", errors="replace")
     classify_record = _load_extractable_classify(classify_file)
-    available_names = _load_names(names_file)
+    names_record = _read_json_dict(names_file)
+    available_names = _names_from_record(names_record)
+    authoritative_names = _is_authoritative_name_review(names_record)
     if not available_names:
         raise ValueError(f"No named people found in {names_file.name}")
 
@@ -218,8 +221,9 @@ def run_page_file(
             report_type=classify_record["report_type"],
             classify_record=classify_record,
             client=selected_client,
+            authoritative_name=authoritative_names,
         )
-        existing_people[resolved_name.casefold()] = person_result.as_dict()
+        existing_people[resolved_name] = person_result.as_dict()
         people_records = _ordered_people(available_names, list(existing_people.values()))
     else:
         people_records = [
@@ -230,6 +234,7 @@ def run_page_file(
                 report_type=classify_record["report_type"],
                 classify_record=classify_record,
                 client=selected_client,
+                authoritative_name=authoritative_names,
             ).as_dict()
             for current_name in available_names
         ]
@@ -249,6 +254,7 @@ def run_folder(
     resume: bool = True,
     wait_ready: bool = True,
     progress: ProgressCallback | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     input_path = Path(input_dir)
     intermediate_path = Path(inter_dir)
@@ -262,9 +268,13 @@ def run_folder(
     completed = 0
     skipped = 0
     errors = 0
+    interrupted = False
     summary_pages: list[dict[str, Any]] = []
 
     for item in pages:
+        if should_stop and should_stop():
+            interrupted = True
+            break
         page = item["page"]
         out_file = output_path / f"p{page:03d}.places.json"
         if resume and artifact_ok(out_file, "json"):
@@ -312,7 +322,8 @@ def run_folder(
         "completed_pages": completed,
         "skipped_pages": skipped,
         "error_pages": errors,
-        "status": _summary_status(len(pages), completed, skipped, errors),
+        "interrupted": interrupted,
+        "status": "interrupted" if interrupted else _summary_status(len(pages), completed, skipped, errors),
         "created_at": _utc_now(),
         "pages": summary_pages,
     }
@@ -362,7 +373,10 @@ def _load_extractable_classify(path: Path) -> dict[str, Any]:
 
 
 def _load_names(path: Path) -> list[str]:
-    record = _read_json_dict(path)
+    return _names_from_record(_read_json_dict(path))
+
+
+def _names_from_record(record: dict[str, Any]) -> list[str]:
     raw = record.get("named_people") if isinstance(record, dict) else None
     if not isinstance(raw, list):
         return []
@@ -372,16 +386,20 @@ def _load_names(path: Path) -> list[str]:
         if not isinstance(item, dict):
             continue
         name = str(item.get("name") or "").strip()
-        if not name or name.casefold() in seen:
+        if not name or name in seen:
             continue
-        seen.add(name.casefold())
+        seen.add(name)
         names.append(name)
     return names
 
 
+def _is_authoritative_name_review(record: dict[str, Any]) -> bool:
+    return bool(record.get("name_review_override")) and str(record.get("name_review_source") or "") == "uploaded_csv"
+
+
 def _resolve_name(person_name: str, available_names: list[str]) -> str:
-    lookup = {name.casefold(): name for name in available_names}
-    resolved = lookup.get(str(person_name).strip().casefold())
+    lookup = {name: name for name in available_names}
+    resolved = lookup.get(str(person_name).strip())
     if not resolved:
         raise ValueError(f"Name {person_name!r} not found in page-level names list")
     return resolved
@@ -396,19 +414,20 @@ def _existing_people_map(record: dict[str, Any]) -> dict[str, dict[str, Any]]:
         if isinstance(person, dict):
             name = str(person.get("name") or "").strip()
             if name:
-                out[name.casefold()] = dict(person)
+                out[name] = dict(person)
     return out
 
 
 def _ordered_people(available_names: list[str], people_records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    lookup = {str(person.get("name") or "").casefold(): dict(person) for person in people_records if str(person.get("name") or "").strip()}
+    lookup = {
+        str(person.get("name") or "").strip(): dict(person)
+        for person in people_records
+        if str(person.get("name") or "").strip()
+    }
     ordered: list[dict[str, Any]] = []
     for name in available_names:
-        person = lookup.get(name.casefold())
+        person = lookup.get(name)
         if person:
-            ordered.append(person)
-    for key, person in sorted(lookup.items(), key=lambda item: item[0]):
-        if all(existing.get("name", "").casefold() != key for existing in ordered):
             ordered.append(person)
     return ordered
 

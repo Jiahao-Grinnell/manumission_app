@@ -22,6 +22,16 @@
         </div>
       </header>
 
+      <section class="action-feedback" id="action-feedback" role="status" aria-live="polite" hidden>
+        <div class="action-feedback-copy">
+          <strong id="action-feedback-title">Working...</strong>
+          <span id="action-feedback-detail"></span>
+        </div>
+        <div class="action-progress-track is-indeterminate" id="action-progress-track" role="progressbar" aria-label="Action progress">
+          <div class="action-progress-fill" id="action-progress-fill"></div>
+        </div>
+      </section>
+
       <section class="launch-grid">
         <form id="upload-form" class="card form-card">
           <h2>Upload And Run</h2>
@@ -46,7 +56,7 @@
               </select>
             </label>
           </div>
-          <button type="submit">Start End-To-End Run</button>
+          <button type="submit" id="start-upload">Start End-To-End Run</button>
         </form>
 
         <form id="existing-form" class="card form-card">
@@ -76,7 +86,7 @@
               <input type="text" name="text_model" placeholder="qwen2.5:14b-instruct">
             </label>
           </div>
-          <button type="submit">Run Registered PDF</button>
+          <button type="submit" id="start-existing">Run Registered PDF</button>
         </form>
       </section>
 

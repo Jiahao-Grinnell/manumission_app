@@ -142,6 +142,84 @@ class AggregatorCoreTests(unittest.TestCase):
             self.assertEqual(by_name["Mubarak"], [("Muost", "1"), ("Haddin", "2")])
             self.assertEqual(by_name["Sulaiman"], [("Muost", "1"), ("Haddin", "2")])
 
+    def test_uploaded_review_csv_is_the_exact_final_name_page_roster(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            inter = root / "intermediate" / "reviewed"
+            out = root / "output" / "reviewed"
+            out.mkdir(parents=True)
+            reviewed_rows = [
+                {"Name": "AMINA", "Page": 1},
+                {"Name": "Amina", "Page": 1},
+                {"Name": "Amina [father: Salim]", "Page": 1},
+                {"Name": "No Route", "Page": 2},
+                {"Name": "AMINA", "Page": 1},
+            ]
+            with (out / "name_review_uploaded_names.csv").open("w", encoding="utf-8", newline="") as fh:
+                writer = csv.DictWriter(fh, fieldnames=["Name", "Page"])
+                writer.writeheader()
+                writer.writerows(reviewed_rows)
+
+            _write_json(inter / "p001.classify.json", {"should_extract": True, "report_type": "statement"})
+            _write_json(inter / "p002.classify.json", {"should_extract": True, "report_type": "correspondence"})
+            _write_json(
+                inter / "p001.meta.json",
+                {
+                    "rows": [
+                        {"Name": "AMINA", "Page": 1, "Crime Type": "one"},
+                        {"Name": "Amina", "Page": 1, "Crime Type": "two"},
+                        {"Name": "Amina [father: Salim]", "Page": 1, "Crime Type": "three"},
+                        {"Name": "Stale Person", "Page": 1, "Crime Type": "stale"},
+                    ]
+                },
+            )
+            _write_json(
+                inter / "p001.places.json",
+                {
+                    "people": [
+                        {"name": "AMINA", "rows": [{"Name": "AMINA", "Page": 1, "Place": "Dubai", "Order": 1}]},
+                        {"name": "Amina", "rows": [{"Name": "Amina", "Page": 1, "Place": "Sharjah", "Order": 1}]},
+                        {
+                            "name": "Amina [father: Salim]",
+                            "rows": [{"Name": "Amina [father: Salim]", "Page": 1, "Place": "Muscat", "Order": 1}],
+                        },
+                        {"name": "Stale Person", "rows": [{"Name": "Stale Person", "Page": 1, "Place": "Aden", "Order": 1}]},
+                    ]
+                },
+            )
+
+            aggregate("reviewed", inter_dir=inter, out_dir=out)
+
+            expected = {
+                ("AMINA", "1"),
+                ("Amina", "1"),
+                ("Amina [father: Salim]", "1"),
+                ("No Route", "2"),
+            }
+            detail_rows = _read_csv(out / "Detailed info.csv")
+            place_rows = _read_csv(out / "name place.csv")
+            self.assertEqual({(row["Name"], row["Page"]) for row in detail_rows}, expected)
+            self.assertEqual({(row["Name"], row["Page"]) for row in place_rows}, expected)
+            self.assertEqual(
+                [(row["Name"], row["Page"]) for row in detail_rows],
+                [
+                    ("AMINA", "1"),
+                    ("Amina", "1"),
+                    ("Amina [father: Salim]", "1"),
+                    ("No Route", "2"),
+                ],
+            )
+            no_route = next(row for row in place_rows if row["Name"] == "No Route")
+            self.assertEqual(no_route["Place"], "")
+            self.assertFalse(any(row["Name"] == "Stale Person" for row in detail_rows + place_rows))
+            status_rows = _read_csv(out / "run_status.csv")
+            self.assertEqual(next(row for row in status_rows if row["page"] == "2")["place_rows"], "0")
+            summary = json.loads((out / "aggregation_summary.json").read_text(encoding="utf-8"))
+            authority = summary["stats"]["authoritative_name_review"]
+            self.assertEqual(authority["expected_name_page_pairs"], 4)
+            self.assertEqual(authority["place_placeholder_rows"], 1)
+            self.assertEqual(authority["actual_route_rows"], 3)
+
 
 def _read_csv(path: Path) -> list[dict[str, str]]:
     with path.open(encoding="utf-8", newline="") as fh:

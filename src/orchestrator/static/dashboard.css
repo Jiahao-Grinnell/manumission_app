@@ -107,6 +107,87 @@ button:disabled {
   cursor: progress;
 }
 
+button.is-busy::before {
+  display: inline-block;
+  width: 0.8em;
+  height: 0.8em;
+  margin-right: 8px;
+  border: 2px solid rgba(255, 255, 255, 0.45);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  content: "";
+  vertical-align: -0.08em;
+  animation: button-spin 800ms linear infinite;
+}
+
+button.secondary.is-busy::before {
+  border-color: rgba(38, 43, 48, 0.25);
+  border-top-color: currentColor;
+}
+
+@keyframes button-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.action-feedback {
+  display: grid;
+  gap: 9px;
+  margin-bottom: 16px;
+  padding: 13px 16px;
+  border: 1px solid rgba(47, 111, 130, 0.28);
+  border-radius: 16px;
+  background: rgba(232, 244, 247, 0.96);
+  box-shadow: 0 8px 22px rgba(47, 83, 94, 0.08);
+}
+
+.action-feedback[hidden] {
+  display: none;
+}
+
+.action-feedback-copy {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: #244954;
+  font-size: 0.9rem;
+}
+
+.action-feedback-copy span {
+  color: #53666a;
+  text-align: right;
+}
+
+.action-progress-track {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #cadde2;
+}
+
+.action-progress-fill {
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #2f7286 0%, #68a0b1 100%);
+  transition: width 160ms ease;
+}
+
+.action-progress-track.is-indeterminate .action-progress-fill {
+  width: 38%;
+  animation: action-progress 1.1s ease-in-out infinite;
+}
+
+@keyframes action-progress {
+  from {
+    transform: translateX(-110%);
+  }
+  to {
+    transform: translateX(270%);
+  }
+}
+
 .launch-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   margin-bottom: 16px;
@@ -383,6 +464,22 @@ th {
   gap: 10px;
 }
 
+.review-verification {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding: 11px 13px;
+  border: 1px solid #9bc69c;
+  border-radius: 12px;
+  background: #e1f1df;
+  color: #234b25;
+}
+
+.review-verification span {
+  text-align: right;
+}
+
 .metric.mini {
   padding: 10px 12px;
 }
@@ -518,5 +615,21 @@ th {
   .summary-grid,
   .review-form {
     grid-template-columns: 1fr;
+  }
+
+  .action-feedback-copy {
+    display: grid;
+  }
+
+  .action-feedback-copy span {
+    text-align: left;
+  }
+
+  .review-verification {
+    display: grid;
+  }
+
+  .review-verification span {
+    text-align: left;
   }
 }
