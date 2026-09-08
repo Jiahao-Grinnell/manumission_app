@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -58,6 +59,34 @@ class IngestOcrTests(unittest.TestCase):
             manifest = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(manifest["image_storage"], "not_persisted")
             self.assertEqual(manifest["pages"][0]["status"], "done")
+
+            # Resume must survive a transient checkpoint lock and reuse OCR.
+            replace = os.replace
+            locked = False
+
+            def briefly_locked(source, destination):
+                nonlocal locked
+                if Path(destination).name == "manifest.json" and not locked:
+                    locked = True
+                    raise PermissionError("checkpoint temporarily locked")
+                replace(source, destination)
+
+            events.clear()
+            with (
+                mock.patch.object(ingest_ocr, "wait_for_ollama_ready"),
+                mock.patch.object(ingest_ocr, "ocr_image_bgr") as ocr,
+                mock.patch("shared.storage.os.replace", side_effect=briefly_locked),
+                mock.patch("shared.storage.time.sleep"),
+            ):
+                resumed = ingest_ocr.run_ingest_ocr(
+                    pdf_path, out_dir, dpi=72, doc_id="demo", model="ocr-mock",
+                    debug=False, resume=True,
+                    progress=lambda action, page, total, path: events.append((action, page, total, path.name)),
+                )
+            self.assertTrue(locked)
+            self.assertEqual(resumed["status"], "complete")
+            ocr.assert_not_called()
+            self.assertEqual(events, [("skip", 1, 1, "p001.txt")])
 
     def test_run_ingest_ocr_stops_between_pages(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

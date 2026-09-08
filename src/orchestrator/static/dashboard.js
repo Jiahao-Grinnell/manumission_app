@@ -621,6 +621,12 @@
 
     function syncControls(payload) {
       var status = payload.status || "";
+      var jobError = byId("job-error");
+      var errors = payload.errors || [];
+      if (jobError) {
+        jobError.hidden = status !== "failed";
+        jobError.textContent = status === "failed" ? "Pipeline failed: " + (errors.length ? errors[errors.length - 1] : "See the job log for details.") : "";
+      }
       var active = isActiveStatus(status);
       var canPause = includes(["pending", "running"], status);
       var canCancel = includes(["pending", "running", "pausing"], status);

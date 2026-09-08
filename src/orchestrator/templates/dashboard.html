@@ -119,6 +119,7 @@
                 <p id="summary-subtitle">{% if selected_job.get('job_id') %}Job {{ selected_job.get('job_id') }}{% else %}Select or start a job to load pipeline progress.{% endif %}</p>
                 <p class="client-status" id="client-status">{% if selected_job_id %}Loading live updates...{% else %}No live job selected.{% endif %}</p>
                 <p class="client-error" id="client-error" hidden></p>
+                <p class="client-error" id="job-error" role="alert" {% if selected_job.get('status') != 'failed' %}hidden{% endif %}>{% if selected_job.get('status') == 'failed' %}Pipeline failed: {{ (selected_job.get('errors') or ['See the job log for details.'])|last }}{% endif %}</p>
               </div>
             </header>
             <div class="summary-grid" id="summary-grid">

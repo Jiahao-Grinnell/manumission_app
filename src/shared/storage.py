@@ -4,8 +4,26 @@ import csv
 import json
 import os
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Iterable, Mapping
+
+
+def _replace_atomic(tmp_path: Path, path: Path) -> None:
+    # Windows-backed Docker mounts can briefly deny replacement while another
+    # process holds the destination open. Keep the old artifact intact and retry
+    # the rename, never fall back to truncating a live checkpoint.
+    try:
+        for attempt in range(9):
+            try:
+                os.replace(tmp_path, path)
+                return
+            except PermissionError:
+                if attempt == 8:
+                    raise
+                time.sleep(min(0.05 * (2 ** attempt), 0.5))
+    finally:
+        tmp_path.unlink(missing_ok=True)
 
 
 def _atomic_text_write(path: Path, content: str) -> None:
@@ -19,7 +37,7 @@ def _atomic_text_write(path: Path, content: str) -> None:
     ) as tmp:
         tmp.write(content)
         tmp_path = Path(tmp.name)
-    os.replace(tmp_path, path)
+    _replace_atomic(tmp_path, path)
 
 
 def write_json_atomic(path: Path, obj: Any) -> None:
@@ -44,7 +62,7 @@ def write_csv_atomic(path: Path, rows: Iterable[Mapping[str, Any]], columns: lis
         for row in rows:
             writer.writerow({col: row.get(col, "") for col in columns})
         tmp_path = Path(tmp.name)
-    os.replace(tmp_path, path)
+    _replace_atomic(tmp_path, path)
 
 
 def artifact_ok(path: Path, kind: str) -> bool:
